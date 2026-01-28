@@ -1,0 +1,2 @@
+[console_scripts]
+govee-sync = govee.cli:main
