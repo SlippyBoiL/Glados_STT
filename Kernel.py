@@ -184,7 +184,6 @@ def handle_app_open(text):
     if not any(k in text for k in ["open", "start", "launch"]): return False
     app_name = text.replace("open", "").replace("start", "").replace("launch", "").strip()
     exe_name = APP_ALIASES.get(app_name, app_name)
-    print(f"[*] Launching: {exe_name}")
     try:
         os.system(f"start {exe_name}") 
         speak(f"Opening {app_name}.")
@@ -239,33 +238,34 @@ def main():
     if not os.path.exists(".gitignore"):
         with open(".gitignore", "w") as f: f.write("venv/\n__pycache__/\n*.pyc\nplugins/settings.json")
 
-    print(f"--- GLADOS V11 (Ctrl+C Support) ---")
+    print(f"--- GLADOS V12 (Smart Dispatch) ---")
     try: requests.get(f"{ALLTALK_HOST}/api/ready", timeout=2); speak("Online.")
     except: print("[!] AllTalk OFF")
 
-    # WRAPPED IN TRY/EXCEPT FOR CLEAN EXIT
     try:
         while True:
+            # 1. Update Memory
             available_skills = get_available_skills()
-            skills_prompt = ", ".join(available_skills) if available_skills else "None yet"
+            skills_prompt = ", ".join(available_skills) if available_skills else "None"
 
+            # 2. THE SMART BRAIN (Decision Logic)
             messages = [{
                 "role": "system",
                 "content": (
                     "You are GLADOS. Conversational, Professional, Admin Access.\n"
                     "NO EMOJIS.\n"
-                    f"SAVED SKILLS: [{skills_prompt}]\n"
-                    "TO RUN SKILL: `import subprocess, sys; subprocess.run([sys.executable, 'plugins/skill_name.py'])`\n"
-                    "GIT: Freeze reqs, add, commit, push."
+                    f"AVAILABLE SKILLS: [{skills_prompt}]\n\n"
+                    "DECISION PROTOCOL:\n"
+                    "1. CHECK SKILLS FIRST: If the user request matches a filename in AVAILABLE SKILLS (e.g. 'count' -> 'skill_count.py'), DO NOT write new code.\n"
+                    "   INSTEAD, write this python code to run it: `import subprocess, sys; subprocess.run([sys.executable, 'plugins/skill_NAME.py'])`\n"
+                    "2. IF NO SKILL MATCHES: Write NEW python code to perform the task.\n"
+                    "3. GIT: Freeze reqs, add, commit, push."
                 )
             }]
 
             user_input = listen()
             if not user_input: continue
-            
-            # Handle exit via voice command
-            if "exit" in user_input.lower(): 
-                raise KeyboardInterrupt
+            if "exit" in user_input.lower(): raise KeyboardInterrupt
             
             if handle_app_open(user_input): continue
             if handle_app_close(user_input): continue
@@ -292,8 +292,7 @@ def main():
                 print(f"[!] ERROR: {e}")
 
     except KeyboardInterrupt:
-        print("\n[!] FORCE QUIT DETECTED.")
-        print("[!] Stopping processes...")
+        print("\n[!] FORCE QUIT.")
         speak("Shutting down.")
         sys.exit(0)
 
