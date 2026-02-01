@@ -22,46 +22,24 @@ VOICE_NAME = "frieren.wav"
 
 PLUGINS_DIR = "plugins"
 RUNTIME_FILE = os.path.join(PLUGINS_DIR, "runtime_action.py")
-SHARED_FILE = os.path.join(PLUGINS_DIR, "my_skills.py")
 SETTINGS_PATH = os.path.join(PLUGINS_DIR, "settings.json")
 
 # --- WAKE WORDS ---
 WAKE_WORDS = ["hey glados", "glados", "okay glados", "hi glados", "hey glass", "hey gladys"]
 
-# --- APP DATABASE (Add your own here!) ---
+# --- APP DATABASE ---
 APP_ALIASES = {
-    "chrome": "chrome",
-    "google chrome": "chrome",
-    "firefox": "firefox",
-    "edge": "msedge",
-    "notepad": "notepad",
-    "calculator": "calc",
-    "calc": "calc",
-    "explorer": "explorer",
-    "file explorer": "explorer",
-    "cmd": "cmd",
-    "terminal": "wt",
-    "discord": "discord",
-    "spotify": "spotify",
-    "steam": "steam",
-    "vs code": "code",
-    "code": "code",
-    "word": "winword",
-    "excel": "excel",
-    "powerpoint": "powerpnt"
+    "chrome": "chrome", "google chrome": "chrome", "firefox": "firefox", "edge": "msedge",
+    "notepad": "notepad", "calculator": "calc", "calc": "calc", "explorer": "explorer",
+    "cmd": "cmd", "discord": "discord", "spotify": "spotify", "steam": "steam",
+    "vs code": "code", "code": "code"
 }
 
 # --- TECHNICAL AUTOCORRECT ---
 TECHNICAL_FIXES = {
-    "colonel": "kernel",
-    "kernel.py": "kernel.py", 
-    "pseudo": "sudo",
-    "get": "git",
-    "hub": "hub",
-    "deaf": "def",
-    "sink": "sync",
-    "pushed": "push",
-    "requirments": "requirements",
+    "colonel": "kernel", "kernel.py": "kernel.py", "pseudo": "sudo",
+    "get": "git", "hub": "hub", "deaf": "def", "sink": "sync",
+    "pushed": "push", "requirments": "requirements", "recipie": "receipt"
 }
 
 # --- SAFETY ---
@@ -80,6 +58,7 @@ try:
 except ImportError:
     SPELL_CHECK_ACTIVE = False
 
+# --- UTILS ---
 def clean_text_for_speech(text):
     text = re.sub(r"```[\s\S]*?```", "", text)
     text = re.sub(r"`[^`]+`", "", text)
@@ -94,13 +73,10 @@ def correct_input_text(text):
     fixed_words = []
     for w in words:
         clean_w = w.lower().strip(".,?!")
-        if clean_w in TECHNICAL_FIXES:
-            fixed_words.append(TECHNICAL_FIXES[clean_w])
-        else:
-            fixed_words.append(w)
+        if clean_w in TECHNICAL_FIXES: fixed_words.append(TECHNICAL_FIXES[clean_w])
+        else: fixed_words.append(w)
     text = " ".join(fixed_words)
-    if SPELL_CHECK_ACTIVE and "def " not in text:
-        text = spell(text)
+    if SPELL_CHECK_ACTIVE and "def " not in text: text = spell(text)
     return text
 
 def is_wake_word(text):
@@ -122,6 +98,11 @@ def _load_settings():
         vol = float(data.get("voice_volume", VOICE_VOLUME))
         VOICE_VOLUME = max(0.1, min(1.5, vol))
     except: pass
+
+def get_available_skills():
+    if not os.path.exists(PLUGINS_DIR): return []
+    files = [f for f in os.listdir(PLUGINS_DIR) if f.startswith("skill_") and f.endswith(".py")]
+    return files
 
 def speak(text):
     clean_text = clean_text_for_speech(text)
@@ -154,7 +135,7 @@ def speak(text):
     except Exception as e:
         print(f"[!] AUDIO FAILED: {e}")
 
-# --- THE HANDS (Code Execution) ---
+# --- THE HANDS (Execution) ---
 def execute_python_code(code_block):
     if "kernel.py" in code_block and ("write" in code_block or "delete" in code_block):
         return "ERROR: ACCESS DENIED. You cannot modify kernel.py."
@@ -197,44 +178,30 @@ def extract_and_run(ai_text):
         return execute_python_code(code)
     return None
 
-# --- FAST APP SKILLS (Local) ---
+# --- FAST APP SKILLS ---
 def handle_app_open(text):
     text = text.lower()
     if not any(k in text for k in ["open", "start", "launch"]): return False
-    
     app_name = text.replace("open", "").replace("start", "").replace("launch", "").strip()
-    
-    # 1. Check Database
-    exe_name = APP_ALIASES.get(app_name)
-    
-    # 2. If not found, try the raw name
-    if not exe_name: exe_name = app_name
-
-    print(f"[*] Attempting to launch: {exe_name}")
+    exe_name = APP_ALIASES.get(app_name, app_name)
+    print(f"[*] Launching: {exe_name}")
     try:
-        # Windows command to start app
         os.system(f"start {exe_name}") 
         speak(f"Opening {app_name}.")
         return True
-    except:
-        return False
+    except: return False
 
 def handle_app_close(text):
     text = text.lower()
-    if not any(k in text for k in ["close", "quit", "exit", "terminate"]): return False
-    
-    app_name = text.replace("close", "").replace("quit", "").replace("exit", "").strip()
+    if not any(k in text for k in ["close", "quit", "terminate"]): return False
+    app_name = text.replace("close", "").replace("quit", "").strip()
     exe_name = APP_ALIASES.get(app_name, app_name)
-    
     if not exe_name.endswith(".exe"): exe_name += ".exe"
-    
-    print(f"[*] Attempting to kill: {exe_name}")
     try:
         os.system(f"taskkill /f /im {exe_name}")
         speak(f"Closing {app_name}.")
         return True
-    except:
-        return False
+    except: return False
 
 # --- THE EARS ---
 def listen():
@@ -269,54 +236,66 @@ def listen():
 def main():
     if not os.path.exists(PLUGINS_DIR): os.makedirs(PLUGINS_DIR)
     _load_settings()
-    
-    # Git Ignore Setup
     if not os.path.exists(".gitignore"):
         with open(".gitignore", "w") as f: f.write("venv/\n__pycache__/\n*.pyc\nplugins/settings.json")
 
-    messages = [{
-        "role": "system",
-        "content": (
-            "You are GLADOS. Conversational, Professional, Admin Access.\n"
-            "NO EMOJIS.\n"
-            "GIT: 'Push to main' -> Write python to: freeze requirements, git add, commit, push.\n"
-            "FILES: Use Python open() to create/edit files.\n"
-        )
-    }]
-
-    print(f"--- GLADOS V9 (App Control Restored) ---")
+    print(f"--- GLADOS V11 (Ctrl+C Support) ---")
     try: requests.get(f"{ALLTALK_HOST}/api/ready", timeout=2); speak("Online.")
     except: print("[!] AllTalk OFF")
 
-    while True:
-        user_input = listen()
-        if not user_input: continue
-        if "exit" in user_input.lower(): break
-        
-        # --- LOCAL SKILLS (FAST) ---
-        if handle_app_open(user_input): continue
-        if handle_app_close(user_input): continue
-        
-        # --- CLOUD BRAIN (SMART) ---
-        messages.append({"role": "user", "content": user_input})
-        try:
-            print("[*] Thinking...")
-            response = client.chat.completions.create(model=MODEL_NAME, messages=messages)
-            ai_text = response.choices[0].message.content
+    # WRAPPED IN TRY/EXCEPT FOR CLEAN EXIT
+    try:
+        while True:
+            available_skills = get_available_skills()
+            skills_prompt = ", ".join(available_skills) if available_skills else "None yet"
+
+            messages = [{
+                "role": "system",
+                "content": (
+                    "You are GLADOS. Conversational, Professional, Admin Access.\n"
+                    "NO EMOJIS.\n"
+                    f"SAVED SKILLS: [{skills_prompt}]\n"
+                    "TO RUN SKILL: `import subprocess, sys; subprocess.run([sys.executable, 'plugins/skill_name.py'])`\n"
+                    "GIT: Freeze reqs, add, commit, push."
+                )
+            }]
+
+            user_input = listen()
+            if not user_input: continue
             
-            execution_result = extract_and_run(ai_text)
+            # Handle exit via voice command
+            if "exit" in user_input.lower(): 
+                raise KeyboardInterrupt
             
-            if execution_result:
-                messages.append({"role": "assistant", "content": ai_text})
-                messages.append({"role": "user", "content": f"OUTPUT:\n{execution_result}"})
-                final_res = client.chat.completions.create(model=MODEL_NAME, messages=messages)
-                speak(final_res.choices[0].message.content) 
-                messages.append({"role": "assistant", "content": final_res.choices[0].message.content})
-            else:
-                speak(ai_text)
-                messages.append({"role": "assistant", "content": ai_text})
-        except Exception as e:
-            print(f"[!] ERROR: {e}")
+            if handle_app_open(user_input): continue
+            if handle_app_close(user_input): continue
+            
+            messages.append({"role": "user", "content": user_input})
+
+            try:
+                print("[*] Thinking...")
+                response = client.chat.completions.create(model=MODEL_NAME, messages=messages)
+                ai_text = response.choices[0].message.content
+                
+                execution_result = extract_and_run(ai_text)
+                
+                if execution_result:
+                    messages.append({"role": "assistant", "content": ai_text})
+                    messages.append({"role": "user", "content": f"OUTPUT:\n{execution_result}"})
+                    final_res = client.chat.completions.create(model=MODEL_NAME, messages=messages)
+                    speak(final_res.choices[0].message.content) 
+                    messages.append({"role": "assistant", "content": final_res.choices[0].message.content})
+                else:
+                    speak(ai_text)
+                    messages.append({"role": "assistant", "content": ai_text})
+            except Exception as e:
+                print(f"[!] ERROR: {e}")
+
+    except KeyboardInterrupt:
+        print("\n[!] FORCE QUIT DETECTED.")
+        print("[!] Stopping processes...")
+        speak("Shutting down.")
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()
