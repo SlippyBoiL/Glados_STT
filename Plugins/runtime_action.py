@@ -1,2 +1,10 @@
-import subprocess, sys
-subprocess.run([sys.executable, 'plugins/skill_run_git_push.py'])
+import subprocess
+import sys
+
+# Freeze requirements
+subprocess.run([sys.executable, '-m', 'pip', 'freeze', '>', 'requirements.txt'])
+
+# Git operations: add, commit, push
+subprocess.run(['git', 'add', '.'])
+subprocess.run(['git', 'commit', '-m', 'Auto-commit: Freeze reqs and updates'])
+subprocess.run(['git', 'push'])
