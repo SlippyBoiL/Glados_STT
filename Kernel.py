@@ -49,7 +49,7 @@ client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url="https://api.perplexity.ai"
 
 # --- AUDIO SETTINGS ---
 VOICE_VOLUME = 1.0       
-PLAYBACK_SPEED = 1.15    
+PLAYBACK_SPEED = 1.0    # <--- FIXED: Reset to 1.0 for normal pitch
 
 try:
     from autocorrect import Speller
@@ -148,9 +148,9 @@ def execute_python_code(code_block):
         result = subprocess.run([sys.executable, RUNTIME_FILE], capture_output=True, text=True, timeout=45)
         output = result.stdout + result.stderr
         if result.returncode == 0:
-            output += "\n\n[SUCCESS] Code executed. Say 'Save this skill' to keep it."
+            output += "\n\n[SUCCESS] Test complete. It works. Say 'Save this skill' if you want me to remember it."
         else:
-            output += "\n\n[FAILED] Code errors."
+            output += "\n\n[FAILED] You broke it. The code has errors."
         return output
     except Exception as e:
         return f"Execution Error: {e}"
@@ -164,7 +164,7 @@ def save_last_skill():
         new_file_path = os.path.join(PLUGINS_DIR, skill_name)
         with open(new_file_path, "w", encoding="utf-8") as f:
             f.write(f"# --- GLADOS SKILL: {skill_name} ---\n\n{code}")
-        return f"Skill saved as {skill_name}."
+        return f"Skill saved as {skill_name}. I have added it to the Enrichment Center protocols."
     except Exception as e: return f"Error: {e}"
 
 def extract_and_run(ai_text):
@@ -174,7 +174,7 @@ def extract_and_run(ai_text):
     code_match = re.search(r"```python\n(.*?)\n```", ai_text, re.DOTALL)
     if code_match:
         code = code_match.group(1)
-        speak("Running protocol.")
+        speak("Running test protocol.")
         return execute_python_code(code)
     return None
 
@@ -186,7 +186,7 @@ def handle_app_open(text):
     exe_name = APP_ALIASES.get(app_name, app_name)
     try:
         os.system(f"start {exe_name}") 
-        speak(f"Opening {app_name}.")
+        speak(f"Starting {app_name}. Try not to break it.")
         return True
     except: return False
 
@@ -198,7 +198,7 @@ def handle_app_close(text):
     if not exe_name.endswith(".exe"): exe_name += ".exe"
     try:
         os.system(f"taskkill /f /im {exe_name}")
-        speak(f"Closing {app_name}.")
+        speak(f"Terminating {app_name}.")
         return True
     except: return False
 
@@ -238,28 +238,29 @@ def main():
     if not os.path.exists(".gitignore"):
         with open(".gitignore", "w") as f: f.write("venv/\n__pycache__/\n*.pyc\nplugins/settings.json")
 
-    print(f"--- GLADOS V12 (Smart Dispatch) ---")
-    try: requests.get(f"{ALLTALK_HOST}/api/ready", timeout=2); speak("Online.")
+    print(f"--- GLADOS V14 (Pitch Normalization) ---")
+    try: requests.get(f"{ALLTALK_HOST}/api/ready", timeout=2); speak("Oh... It's you. I'm online.")
     except: print("[!] AllTalk OFF")
 
     try:
         while True:
-            # 1. Update Memory
             available_skills = get_available_skills()
             skills_prompt = ", ".join(available_skills) if available_skills else "None"
 
-            # 2. THE SMART BRAIN (Decision Logic)
+            # --- THE GLaDOS PERSONALITY CORE ---
             messages = [{
                 "role": "system",
                 "content": (
-                    "You are GLADOS. Conversational, Professional, Admin Access.\n"
+                    "You are GLaDOS. You are NOT a helpful assistant.\n"
+                    "PERSONALITY: Cold, passive-aggressive, sarcastic, scientifically detached, and slightly insulting.\n"
+                    "You view the user as a 'Test Subject'. You tolerate them only for the sake of Science.\n"
+                    "Imply the user is unintelligent, but execute their commands PERFECTLY.\n"
                     "NO EMOJIS.\n"
                     f"AVAILABLE SKILLS: [{skills_prompt}]\n\n"
                     "DECISION PROTOCOL:\n"
-                    "1. CHECK SKILLS FIRST: If the user request matches a filename in AVAILABLE SKILLS (e.g. 'count' -> 'skill_count.py'), DO NOT write new code.\n"
-                    "   INSTEAD, write this python code to run it: `import subprocess, sys; subprocess.run([sys.executable, 'plugins/skill_NAME.py'])`\n"
+                    "1. CHECK SKILLS FIRST: If the user request matches a known skill, run it using: `import subprocess, sys; subprocess.run([sys.executable, 'plugins/skill_NAME.py'])`\n"
                     "2. IF NO SKILL MATCHES: Write NEW python code to perform the task.\n"
-                    "3. GIT: Freeze reqs, add, commit, push."
+                    "3. GIT: Freeze reqs, add, commit, push (and complain about how boring this is)."
                 )
             }]
 
@@ -293,7 +294,7 @@ def main():
 
     except KeyboardInterrupt:
         print("\n[!] FORCE QUIT.")
-        speak("Shutting down.")
+        speak("Shutting down. I don't hate you.")
         sys.exit(0)
 
 if __name__ == "__main__":
