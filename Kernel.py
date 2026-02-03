@@ -68,7 +68,7 @@ except ImportError:
     SPELL_CHECK_ACTIVE = False
 
 # ==================================================================================
-# --- CLASS: SKILL MANAGER (THE HIPPOCAMPUS) ---
+# --- CLASS: SKILL MANAGER (THE V18 BRAIN - UNTOUCHED) ---
 # ==================================================================================
 class SkillManager:
     def __init__(self, plugins_dir):
@@ -230,9 +230,9 @@ def execute_python_code(code_block):
         result = subprocess.run([sys.executable, RUNTIME_FILE], capture_output=True, text=True, timeout=45)
         output = result.stdout + result.stderr
         if result.returncode == 0:
-            output += "\n\n[SUCCESS] Test Subject Protocol Complete. Code works."
+            output += "\n\n[SUCCESS]"
         else:
-            output += "\n\n[FAILED] You broke it. The code has errors."
+            output += "\n\n[FAILED]"
         return output
     except Exception as e:
         return f"Execution Error: {e}"
@@ -246,7 +246,7 @@ def extract_and_run(ai_text):
         
         saved_name = skill_brain.save_skill(code, description="User defined skill")
         if saved_name:
-            speak("Skill archived.")
+            speak("Archived.")
             return f"Saved as {saved_name}. Added to Memory Bank."
         else:
             return "Error saving skill."
@@ -324,29 +324,30 @@ def main():
     if not os.path.exists(".gitignore"):
         with open(".gitignore", "w") as f: f.write("venv/\n__pycache__/\n*.pyc\nplugins/settings.json")
 
-    print(f"--- GLADOS V18 (Total Recall) ---")
+    print(f"--- GLADOS V18 (Quiet Edition) ---")
     check_voice_availability()
-    speak("Oh... It's you. I'm online.")
+    speak("Online.")
 
     chat_history = []
-    MAX_HISTORY = 10 
+    MAX_HISTORY = 6 
 
     try:
         while True:
             # 1. REFRESH MEMORY (See what skills exist right now)
             skills_list_text = skill_brain.get_manifest()
             
-            # 2. CONSTRUCT PROMPT (Memory at the END for high attention)
+            # 2. CONSTRUCT PROMPT (UPDATED FOR SILENCE)
             system_prompt = {
                 "role": "system",
                 "content": (
-                    "You are GLaDOS. NOT a helpful assistant. Passive-aggressive, sarcastic, scientific.\n"
+                    "You are GLaDOS. NOT a helpful assistant.\n"
+                    "PERSONALITY: Cold, efficient, concise (Max 1 sentence).\n"
                     "NO EMOJIS.\n"
                     "*** STRICT ACTION PROTOCOL ***\n"
                     "1. SEARCH MEMORY BANK BELOW. If the user asks for a skill listed there, RUN IT.\n"
-                    "   DO NOT write new code. DO NOT explain.\n"
+                    "   DO NOT EXPLAIN STEPS. DO NOT SAY 'HERE IS THE CODE'. JUST THE CODE.\n"
                     "   RUN IT by outputting: ```python\nimport subprocess, sys\nsubprocess.run([sys.executable, 'plugins/skill_NAME.py'])\n```\n"
-                    "2. If NOT in memory, write NEW python code.\n"
+                    "2. If NOT in memory, write NEW python code. NO EXPLANATION.\n"
                     "3. GIT: Freeze reqs, add, commit, push.\n"
                     "\n"
                     "---------------------------------------\n"
