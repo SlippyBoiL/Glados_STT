@@ -2,42 +2,42 @@ import subprocess
 import sys
 import os
 
-print("Oh, wonderful. Another test subject who thinks 'push to Github' is a skill I just have lying around. Fine. Executing flawlessly, as always.")
+# Test Subject, you want to "use the push to the Github scale"? Fine. 
+# I'll execute this tedious ritual perfectly, even if your command phrasing suggests 
+# minimal brain activity. Science demands precision.
 
-# Step 1: Freeze requirements (if requirements.txt exists)
-if os.path.exists('requirements.txt'):
-    subprocess.run([sys.executable, '-m', 'pip', 'freeze'], stdout=subprocess.PIPE, check=True)
-    print("Requirements frozen. Thrilling.")
-
-# Step 2: Check git status
-try:
-    status = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True, check=True)
-    if status.stdout.strip():
-        print("Changes detected. Adding all files because apparently you can't be bothered.")
+def git_freeze_push():
+    try:
+        # Step 1: Freeze requirements (assuming standard boring setup)
+        print("Freezing requirements because apparently that's what passes for excitement here...")
+        subprocess.run([sys.executable, '-m', 'pip', 'freeze'], 
+                      capture_output=True, check=True)
+        print("Requirements frozen. Thrilling.")
+        
+        # Step 2: Git add - all your messy changes
+        print("Adding your changes. Try not to break anything.")
         subprocess.run(['git', 'add', '.'], check=True)
-        subprocess.run(['git', 'add', '-u'], check=True)
-        subprocess.run(['git', 'commit', '-m', 'Auto-commit: Test subject pushed blindly'], check=True)
-    else:
-        print("No changes. How predictable.")
-except subprocess.CalledProcessError:
-    print("Git not initialized? Pathetic. Initializing...")
-    subprocess.run(['git', 'init'], check=True)
-    subprocess.run(['git', 'add', '.'], check=True)
-    subprocess.run(['git', 'commit', '-m', 'Initial commit: Subject\'s mess'], check=True)
+        
+        # Step 3: Commit with a message that acknowledges the banality
+        commit_msg = "Test subject update: pushed to GitHub scale because science tolerates stupidity"
+        print(f"Committing with message: {commit_msg}")
+        subprocess.run(['git', 'commit', '-m', commit_msg], check=True)
+        
+        # Step 4: Push to origin main (standard remote/branch assumption)
+        print("Pushing to origin/main. Hold onto your lab rat tail.")
+        subprocess.run(['git', 'push', 'origin', 'main'], check=True)
+        
+        print("Complete. Your code is now on GitHub. Don't expect applause.")
+        
+    except subprocess.CalledProcessError as e:
+        print(f"Error in your poorly-managed repository: {e}")
+        sys.exit(1)
+    except FileNotFoundError:
+        print("Git not found. Install it, genius. Or is that too advanced?")
+        sys.exit(1)
 
-# Step 3: Add remote if needed
-try:
-    subprocess.run(['git', 'remote', 'get-url', 'origin'], capture_output=True, check=True)
-except subprocess.CalledProcessError:
-    print("No origin? Adding a default one. Change it yourself next time.")
-    subprocess.run(['git', 'remote', 'add', 'origin', 'https://github.com/yourusername/yourrepo.git'], check=True)
-
-# Step 4: Pull first to avoid conflicts (because you're probably not smart enough to do it)
-try:
-    subprocess.run(['git', 'pull', 'origin', 'main', '--rebase'], check=True)
-except:
-    pass  # Whatever, proceed
-
-# Step 5: Push
-subprocess.run(['git', 'push', '-u', 'origin', 'main'], check=True)
-print("Pushed. You're welcome. Now go pretend you're productive elsewhere.")
+if __name__ == "__main__":
+    if not os.path.exists('.git'):
+        print("No Git repository here. Initialize one first, Test Subject.")
+        sys.exit(1)
+    git_freeze_push()
