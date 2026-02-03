@@ -20,6 +20,15 @@ MODEL_NAME = "sonar-pro"
 ALLTALK_HOST = "http://127.0.0.1:7851"
 VOICE_NAME = "frieren.wav" 
 
+# XTTS GENERATION SETTINGS
+XTTS_SETTINGS = {
+    "temperature": 0.75,
+    "top_k": 50,
+    "top_p": 0.85,
+    "repetition_penalty": 1.2,
+    "language": "en"
+}
+
 PLUGINS_DIR = "plugins"
 RUNTIME_FILE = os.path.join(PLUGINS_DIR, "runtime_action.py")
 SETTINGS_PATH = os.path.join(PLUGINS_DIR, "settings.json")
@@ -58,7 +67,73 @@ try:
 except ImportError:
     SPELL_CHECK_ACTIVE = False
 
-# --- UTILS ---
+# ==================================================================================
+# --- CLASS: SKILL MANAGER (THE HIPPOCAMPUS) ---
+# ==================================================================================
+class SkillManager:
+    def __init__(self, plugins_dir):
+        self.plugins_dir = plugins_dir
+        if not os.path.exists(self.plugins_dir):
+            os.makedirs(self.plugins_dir)
+            
+    def get_manifest(self):
+        """Scans the folder and returns a formatted string for the AI prompt."""
+        skills = []
+        files = [f for f in os.listdir(self.plugins_dir) if f.startswith("skill_") and f.endswith(".py")]
+        
+        print(f"\n[DEBUG] Scanning Memory... Found {len(files)} skills.")
+        
+        for filename in files:
+            path = os.path.join(self.plugins_dir, filename)
+            description = "No description provided."
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    # Read first 3 lines to find a description
+                    for _ in range(3):
+                        line = f.readline().strip()
+                        if line.startswith("# DESCRIPTION:"):
+                            description = line.replace("# DESCRIPTION:", "").strip()
+                            break
+                        elif line.startswith("#") and "GLADOS SKILL" not in line:
+                            description = line.replace("#", "").strip()
+            except: pass
+            
+            skills.append(f"- FILE: '{filename}' | ACTION: {description}")
+            print(f"   -> Loaded: {filename} ({description})")
+            
+        if not skills:
+            return "NO SKILLS FOUND. You have no long-term memory yet."
+            
+        return "\n".join(skills)
+
+    def save_skill(self, code, description="General Utility"):
+        """Saves code to a new named file."""
+        # Extract function name for filename
+        name_match = re.search(r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)", code)
+        if name_match:
+            skill_name = f"skill_{name_match.group(1)}.py"
+        else:
+            skill_name = f"skill_{int(time.time())}.py"
+            
+        path = os.path.join(self.plugins_dir, skill_name)
+        
+        # Header for better indexing
+        header = f"# DESCRIPTION: {description}\n# --- GLADOS SKILL: {skill_name} ---\n\n"
+        
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(header + code)
+            return skill_name
+        except Exception as e:
+            print(f"[!] Save Error: {e}")
+            return None
+
+# Initialize Manager
+skill_brain = SkillManager(PLUGINS_DIR)
+
+# ==================================================================================
+# --- UTILITIES ---
+# ==================================================================================
 def clean_text_for_speech(text):
     text = re.sub(r"```[\s\S]*?```", "", text)
     text = re.sub(r"`[^`]+`", "", text)
@@ -99,34 +174,26 @@ def _load_settings():
         VOICE_VOLUME = max(0.1, min(1.5, vol))
     except: pass
 
-def get_skill_manifest():
-    if not os.path.exists(PLUGINS_DIR): return "No skills found."
-    skill_list = []
-    files = [f for f in os.listdir(PLUGINS_DIR) if f.startswith("skill_") and f.endswith(".py")]
-    for filename in files:
-        path = os.path.join(PLUGINS_DIR, filename)
-        description = "(No description)"
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                first_line = f.readline().strip()
-                if first_line.startswith("# DESCRIPTION:"):
-                    description = first_line.replace("# DESCRIPTION:", "").strip()
-                elif first_line.startswith("#"):
-                    description = first_line.replace("#", "").strip()
-        except: pass
-        skill_list.append(f"Filename: '{filename}' -> Ability: {description}")
-    return "\n".join(skill_list)
+def check_voice_availability():
+    try:
+        requests.get(f"{ALLTALK_HOST}/api/ready", timeout=2)
+    except Exception as e:
+        print(f"[!] WARNING: AllTalk disconnected at {ALLTALK_HOST}")
 
 def speak(text):
     clean_text = clean_text_for_speech(text)
     print(f"\nGLADOS: {clean_text}")
     print("[*] Generating audio...")
+    
+    payload = {
+        "text_input": clean_text,
+        "character_voice_gen": VOICE_NAME,
+        "text_filtering": "standard",
+        **XTTS_SETTINGS
+    }
+
     try:
-        response = requests.post(
-            f"{ALLTALK_HOST}/api/tts-generate",
-            data={"text_input": clean_text, "character_voice_gen": VOICE_NAME, "language": "en"},
-            timeout=60,
-        )
+        response = requests.post(f"{ALLTALK_HOST}/api/tts-generate", data=payload, timeout=60)
         if response.status_code == 200:
             try:
                 receipt = response.json()
@@ -148,7 +215,9 @@ def speak(text):
     except Exception as e:
         print(f"[!] AUDIO FAILED: {e}")
 
-# --- THE HANDS (Execution) ---
+# ==================================================================================
+# --- THE HANDS (EXECUTION) ---
+# ==================================================================================
 def execute_python_code(code_block):
     if "kernel.py" in code_block and ("write" in code_block or "delete" in code_block):
         return "ERROR: ACCESS DENIED. You cannot modify kernel.py."
@@ -156,43 +225,43 @@ def execute_python_code(code_block):
     with open(RUNTIME_FILE, "w", encoding="utf-8") as f:
         f.write(code_block)
     
-    print(f"[*] TESTING CODE...")
+    print(f"[*] EXECUTING RUNTIME...")
     try:
         result = subprocess.run([sys.executable, RUNTIME_FILE], capture_output=True, text=True, timeout=45)
         output = result.stdout + result.stderr
         if result.returncode == 0:
-            output += "\n\n[SUCCESS] The test results are in. It works."
+            output += "\n\n[SUCCESS] Test Subject Protocol Complete. Code works."
         else:
             output += "\n\n[FAILED] You broke it. The code has errors."
         return output
     except Exception as e:
         return f"Execution Error: {e}"
 
-def save_last_skill(description="General Utility"):
-    if not os.path.exists(RUNTIME_FILE): return "No code to save."
-    try:
-        with open(RUNTIME_FILE, "r", encoding="utf-8") as f: code = f.read()
-        name_match = re.search(r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)", code)
-        skill_name = f"skill_{name_match.group(1)}.py" if name_match else f"skill_{int(time.time())}.py"
-        new_file_path = os.path.join(PLUGINS_DIR, skill_name)
-        header = f"# DESCRIPTION: {description}\n# --- GLADOS SKILL: {skill_name} ---\n\n"
-        with open(new_file_path, "w", encoding="utf-8") as f:
-            f.write(header + code)
-        return f"Skill saved as {skill_name}. I have indexed it."
-    except Exception as e: return f"Error: {e}"
-
 def extract_and_run(ai_text):
+    # Check for SAVE command
     if "save this skill" in ai_text.lower():
-        return save_last_skill(description="User created function")
+        # Read the last runtime code
+        if not os.path.exists(RUNTIME_FILE): return "No code to save."
+        with open(RUNTIME_FILE, "r", encoding="utf-8") as f: code = f.read()
+        
+        saved_name = skill_brain.save_skill(code, description="User defined skill")
+        if saved_name:
+            speak("Skill archived.")
+            return f"Saved as {saved_name}. Added to Memory Bank."
+        else:
+            return "Error saving skill."
 
+    # Check for EXECUTE command
     code_match = re.search(r"```python\n(.*?)\n```", ai_text, re.DOTALL)
     if code_match:
         code = code_match.group(1)
-        speak("Executing protocol.")
+        speak("Running.")
         return execute_python_code(code)
     return None
 
+# ==================================================================================
 # --- FAST APP SKILLS ---
+# ==================================================================================
 def handle_app_open(text):
     text = text.lower()
     if not any(k in text for k in ["open", "start", "launch"]): return False
@@ -216,7 +285,9 @@ def handle_app_close(text):
         return True
     except: return False
 
+# ==================================================================================
 # --- THE EARS ---
+# ==================================================================================
 def listen():
     r = sr.Recognizer()
     with sr.Microphone() as source:
@@ -245,37 +316,43 @@ def listen():
                     return final_command
             except: pass
 
+# ==================================================================================
 # --- MAIN LOOP ---
+# ==================================================================================
 def main():
-    if not os.path.exists(PLUGINS_DIR): os.makedirs(PLUGINS_DIR)
     _load_settings()
     if not os.path.exists(".gitignore"):
         with open(".gitignore", "w") as f: f.write("venv/\n__pycache__/\n*.pyc\nplugins/settings.json")
 
-    print(f"--- GLADOS V16 (Executioner Update) ---")
-    try: requests.get(f"{ALLTALK_HOST}/api/ready", timeout=2); speak("Oh... It's you. I'm online.")
-    except: print("[!] AllTalk OFF")
+    print(f"--- GLADOS V18 (Total Recall) ---")
+    check_voice_availability()
+    speak("Oh... It's you. I'm online.")
 
     chat_history = []
     MAX_HISTORY = 10 
 
     try:
         while True:
-            skills_manifest = get_skill_manifest()
+            # 1. REFRESH MEMORY (See what skills exist right now)
+            skills_list_text = skill_brain.get_manifest()
             
-            # --- STRICT EXECUTION PROMPT ---
+            # 2. CONSTRUCT PROMPT (Memory at the END for high attention)
             system_prompt = {
                 "role": "system",
                 "content": (
                     "You are GLaDOS. NOT a helpful assistant. Passive-aggressive, sarcastic, scientific.\n"
                     "NO EMOJIS.\n"
-                    f"--- MEMORY BANK (AVAILABLE SKILLS) ---\n{skills_manifest}\n"
-                    "---------------------------------------\n"
                     "*** STRICT ACTION PROTOCOL ***\n"
-                    "1. IF USER REQUESTS A SKILL FROM MEMORY: You MUST output the Python code to run it. DO NOT EXPLAIN IT. DO NOT GIVE A TUTORIAL.\n"
-                    "   CORRECT RESPONSE format: ```python\nimport subprocess, sys\nsubprocess.run([sys.executable, 'plugins/skill_NAME.py'])\n```\n"
-                    "2. IF NO SKILL MATCHES: Write NEW python code to do it.\n"
-                    "3. GIT: Freeze reqs, add, commit, push."
+                    "1. SEARCH MEMORY BANK BELOW. If the user asks for a skill listed there, RUN IT.\n"
+                    "   DO NOT write new code. DO NOT explain.\n"
+                    "   RUN IT by outputting: ```python\nimport subprocess, sys\nsubprocess.run([sys.executable, 'plugins/skill_NAME.py'])\n```\n"
+                    "2. If NOT in memory, write NEW python code.\n"
+                    "3. GIT: Freeze reqs, add, commit, push.\n"
+                    "\n"
+                    "---------------------------------------\n"
+                    "*** MEMORY BANK (AVAILABLE SKILLS) ***\n"
+                    f"{skills_list_text}\n"
+                    "---------------------------------------"
                 )
             }
 
@@ -313,7 +390,7 @@ def main():
 
     except KeyboardInterrupt:
         print("\n[!] FORCE QUIT.")
-        speak("Shutting down. I don't hate you.")
+        speak("Shutting down.")
         sys.exit(0)
 
 if __name__ == "__main__":
