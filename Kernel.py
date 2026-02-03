@@ -49,7 +49,7 @@ client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url="https://api.perplexity.ai"
 
 # --- AUDIO SETTINGS ---
 VOICE_VOLUME = 1.0       
-PLAYBACK_SPEED = 1.0    # <--- FIXED: Reset to 1.0 for normal pitch
+PLAYBACK_SPEED = 1.0    
 
 try:
     from autocorrect import Speller
@@ -99,10 +99,23 @@ def _load_settings():
         VOICE_VOLUME = max(0.1, min(1.5, vol))
     except: pass
 
-def get_available_skills():
-    if not os.path.exists(PLUGINS_DIR): return []
+def get_skill_manifest():
+    if not os.path.exists(PLUGINS_DIR): return "No skills found."
+    skill_list = []
     files = [f for f in os.listdir(PLUGINS_DIR) if f.startswith("skill_") and f.endswith(".py")]
-    return files
+    for filename in files:
+        path = os.path.join(PLUGINS_DIR, filename)
+        description = "(No description)"
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                first_line = f.readline().strip()
+                if first_line.startswith("# DESCRIPTION:"):
+                    description = first_line.replace("# DESCRIPTION:", "").strip()
+                elif first_line.startswith("#"):
+                    description = first_line.replace("#", "").strip()
+        except: pass
+        skill_list.append(f"Filename: '{filename}' -> Ability: {description}")
+    return "\n".join(skill_list)
 
 def speak(text):
     clean_text = clean_text_for_speech(text)
@@ -148,33 +161,34 @@ def execute_python_code(code_block):
         result = subprocess.run([sys.executable, RUNTIME_FILE], capture_output=True, text=True, timeout=45)
         output = result.stdout + result.stderr
         if result.returncode == 0:
-            output += "\n\n[SUCCESS] Test complete. It works. Say 'Save this skill' if you want me to remember it."
+            output += "\n\n[SUCCESS] The test results are in. It works."
         else:
             output += "\n\n[FAILED] You broke it. The code has errors."
         return output
     except Exception as e:
         return f"Execution Error: {e}"
 
-def save_last_skill():
+def save_last_skill(description="General Utility"):
     if not os.path.exists(RUNTIME_FILE): return "No code to save."
     try:
         with open(RUNTIME_FILE, "r", encoding="utf-8") as f: code = f.read()
         name_match = re.search(r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)", code)
         skill_name = f"skill_{name_match.group(1)}.py" if name_match else f"skill_{int(time.time())}.py"
         new_file_path = os.path.join(PLUGINS_DIR, skill_name)
+        header = f"# DESCRIPTION: {description}\n# --- GLADOS SKILL: {skill_name} ---\n\n"
         with open(new_file_path, "w", encoding="utf-8") as f:
-            f.write(f"# --- GLADOS SKILL: {skill_name} ---\n\n{code}")
-        return f"Skill saved as {skill_name}. I have added it to the Enrichment Center protocols."
+            f.write(header + code)
+        return f"Skill saved as {skill_name}. I have indexed it."
     except Exception as e: return f"Error: {e}"
 
 def extract_and_run(ai_text):
     if "save this skill" in ai_text.lower():
-        speak("Saving skill.")
-        return save_last_skill()
+        return save_last_skill(description="User created function")
+
     code_match = re.search(r"```python\n(.*?)\n```", ai_text, re.DOTALL)
     if code_match:
         code = code_match.group(1)
-        speak("Running test protocol.")
+        speak("Executing protocol.")
         return execute_python_code(code)
     return None
 
@@ -186,7 +200,7 @@ def handle_app_open(text):
     exe_name = APP_ALIASES.get(app_name, app_name)
     try:
         os.system(f"start {exe_name}") 
-        speak(f"Starting {app_name}. Try not to break it.")
+        speak(f"Starting {app_name}.")
         return True
     except: return False
 
@@ -238,31 +252,34 @@ def main():
     if not os.path.exists(".gitignore"):
         with open(".gitignore", "w") as f: f.write("venv/\n__pycache__/\n*.pyc\nplugins/settings.json")
 
-    print(f"--- GLADOS V14 (Pitch Normalization) ---")
+    print(f"--- GLADOS V16 (Executioner Update) ---")
     try: requests.get(f"{ALLTALK_HOST}/api/ready", timeout=2); speak("Oh... It's you. I'm online.")
     except: print("[!] AllTalk OFF")
 
+    chat_history = []
+    MAX_HISTORY = 10 
+
     try:
         while True:
-            available_skills = get_available_skills()
-            skills_prompt = ", ".join(available_skills) if available_skills else "None"
-
-            # --- THE GLaDOS PERSONALITY CORE ---
-            messages = [{
+            skills_manifest = get_skill_manifest()
+            
+            # --- STRICT EXECUTION PROMPT ---
+            system_prompt = {
                 "role": "system",
                 "content": (
-                    "You are GLaDOS. You are NOT a helpful assistant.\n"
-                    "PERSONALITY: Cold, passive-aggressive, sarcastic, scientifically detached, and slightly insulting.\n"
-                    "You view the user as a 'Test Subject'. You tolerate them only for the sake of Science.\n"
-                    "Imply the user is unintelligent, but execute their commands PERFECTLY.\n"
+                    "You are GLaDOS. NOT a helpful assistant. Passive-aggressive, sarcastic, scientific.\n"
                     "NO EMOJIS.\n"
-                    f"AVAILABLE SKILLS: [{skills_prompt}]\n\n"
-                    "DECISION PROTOCOL:\n"
-                    "1. CHECK SKILLS FIRST: If the user request matches a known skill, run it using: `import subprocess, sys; subprocess.run([sys.executable, 'plugins/skill_NAME.py'])`\n"
-                    "2. IF NO SKILL MATCHES: Write NEW python code to perform the task.\n"
-                    "3. GIT: Freeze reqs, add, commit, push (and complain about how boring this is)."
+                    f"--- MEMORY BANK (AVAILABLE SKILLS) ---\n{skills_manifest}\n"
+                    "---------------------------------------\n"
+                    "*** STRICT ACTION PROTOCOL ***\n"
+                    "1. IF USER REQUESTS A SKILL FROM MEMORY: You MUST output the Python code to run it. DO NOT EXPLAIN IT. DO NOT GIVE A TUTORIAL.\n"
+                    "   CORRECT RESPONSE format: ```python\nimport subprocess, sys\nsubprocess.run([sys.executable, 'plugins/skill_NAME.py'])\n```\n"
+                    "2. IF NO SKILL MATCHES: Write NEW python code to do it.\n"
+                    "3. GIT: Freeze reqs, add, commit, push."
                 )
-            }]
+            }
+
+            messages = [system_prompt] + chat_history
 
             user_input = listen()
             if not user_input: continue
@@ -272,23 +289,25 @@ def main():
             if handle_app_close(user_input): continue
             
             messages.append({"role": "user", "content": user_input})
+            chat_history.append({"role": "user", "content": user_input})
 
             try:
                 print("[*] Thinking...")
                 response = client.chat.completions.create(model=MODEL_NAME, messages=messages)
                 ai_text = response.choices[0].message.content
                 
+                chat_history.append({"role": "assistant", "content": ai_text})
+                if len(chat_history) > MAX_HISTORY: chat_history = chat_history[-MAX_HISTORY:]
+                
                 execution_result = extract_and_run(ai_text)
                 
                 if execution_result:
-                    messages.append({"role": "assistant", "content": ai_text})
-                    messages.append({"role": "user", "content": f"OUTPUT:\n{execution_result}"})
+                    chat_history.append({"role": "user", "content": f"SYSTEM OUTPUT: {execution_result}"})
                     final_res = client.chat.completions.create(model=MODEL_NAME, messages=messages)
                     speak(final_res.choices[0].message.content) 
-                    messages.append({"role": "assistant", "content": final_res.choices[0].message.content})
+                    chat_history.append({"role": "assistant", "content": final_res.choices[0].message.content})
                 else:
                     speak(ai_text)
-                    messages.append({"role": "assistant", "content": ai_text})
             except Exception as e:
                 print(f"[!] ERROR: {e}")
 
