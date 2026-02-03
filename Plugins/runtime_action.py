@@ -2,23 +2,13 @@ import subprocess
 import sys
 import os
 
-# Change to the project directory if not already there; assuming current dir is project root
-# Adjust path if needed: os.chdir('/path/to/your/project')
+# Freeze requirements if exists
+try:
+    subprocess.run([sys.executable, '-m', 'pip', 'freeze', '> requirements.txt'], check=True, cwd=os.getcwd())
+except:
+    pass
 
-# Standard Git push sequence: assuming repo exists locally and remote is set
-commands = [
-    'git add -A',
-    'git commit -m "Automated push from GLaDOS - because humans forget"',
-    'git push origin main'  # Use 'master' if your default branch is master
-]
-
-for cmd in commands:
-    try:
-        result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
-        print(f"Success: {cmd}\n{result.stdout}")
-    except subprocess.CalledProcessError as e:
-        print(f"Error with {cmd}: {e.stderr}")
-        # If no remote or repo issues, common fixes:
-        if "remote origin" in e.stderr or "not a git repository" in e.stderr:
-            print("Reminder: Create GitHub repo first, then 'git remote add origin https://github.com/YOURUSERNAME/YOURREPO.git'")
-        sys.exit(1)
+# Git operations: add, commit, push
+subprocess.run(['git', 'add', '.'], check=True, cwd=os.getcwd())
+subprocess.run(['git', 'commit', '-m', 'Auto-push: Project updated'], check=True, cwd=os.getcwd())
+subprocess.run(['git', 'push'], check=True, cwd=os.getcwd())
