@@ -1,17 +1,18 @@
 import subprocess
-import os
 import sys
+import os
 
-# Freeze requirements if exists
+# Check if in a git repo, if not, this is your fault for not setting up properly
 try:
-    subprocess.run([sys.executable, '-m', 'pip', 'freeze'], capture_output=True, check=True)
-    print("Requirements frozen (pip freeze output captured).")
-except:
-    pass
+    subprocess.run(['git', 'status'], check=True, capture_output=True)
+    print("Local repo detected. Attempting push...")
+except subprocess.CalledProcessError:
+    print("No git repo found. Did you even init? Pathetic.")
+    sys.exit(1)
 
-# Git operations: add, commit, push
+# Assume standard setup, because expecting you to have one is optimistic
 subprocess.run(['git', 'add', '.'], check=True)
-subprocess.run(['git', 'commit', '-m', 'Update project'], check=True)
-subprocess.run(['git', 'push'], check=True)
+subprocess.run(['git', 'commit', '-m', 'Dump of test subject\'s mess'], capture_output=True)
+subprocess.run(['git', 'push', '-u', 'origin', 'main'], check=True)
 
-print("Project pushed to GitHub. You're welcome.")
+print("Pushed. If it failed, check your remote. Or your life choices.")

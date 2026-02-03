@@ -9,6 +9,7 @@ import speech_recognition as sr
 import sounddevice as sd
 import soundfile as sf
 import io
+import winreg
 from difflib import SequenceMatcher
 from openai import OpenAI
 
@@ -42,12 +43,22 @@ SETTINGS_PATH = os.path.join(PLUGINS_DIR, "settings.json")
 WAKE_WORDS = ["hey glados", "glados", "okay glados", "hi glados", "hey glass", "hey gladys"]
 
 
-# --- APP DATABASE ---
+# --- APP DATABASE (Windows 10/11 PROPER HANDLING) ---
 APP_ALIASES = {
-    "chrome": "chrome", "google chrome": "chrome", "firefox": "firefox", "edge": "msedge",
-    "notepad": "notepad", "calculator": "calc", "calc": "calc", "explorer": "explorer",
-    "cmd": "cmd", "discord": "discord", "spotify": "spotify", "steam": "steam",
-    "vs code": "code", "code": "code"
+    "chrome": "chrome",
+    "google chrome": "chrome",
+    "firefox": "firefox",
+    "edge": "msedge",
+    "notepad": "notepad.exe",
+    "calculator": "calc.exe",
+    "calc": "calc.exe",
+    "explorer": "explorer.exe",
+    "cmd": "cmd.exe",
+    "discord": "discord",
+    "spotify": "spotify",
+    "steam": "steam",
+    "vs code": "code",
+    "code": "code"
 }
 
 
@@ -144,6 +155,68 @@ class SkillManager:
 
 # Initialize Manager
 skill_brain = SkillManager(PLUGINS_DIR)
+
+
+# ==================================================================================
+# --- WINDOWS 10 APP LAUNCHER UTILITY ---
+# ==================================================================================
+def find_app_path(app_name):
+    """Attempts to find app executable on Windows 10."""
+    # First check common direct paths
+    common_paths = {
+        "chrome": [
+            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+            "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"
+        ],
+        "firefox": [
+            "C:\\Program Files\\Mozilla Firefox\\firefox.exe",
+            "C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe"
+        ],
+        "discord": [
+            os.path.expandvars("%APPDATA%\\Discord\\Update.exe --processStart Discord.exe")
+        ],
+        "spotify": [
+            os.path.expandvars("%APPDATA%\\Spotify\\Spotify.exe")
+        ],
+        "steam": [
+            "C:\\Program Files (x86)\\Steam\\steam.exe",
+            "C:\\Program Files\\Steam\\steam.exe"
+        ],
+        "code": [
+            "C:\\Program Files\\Microsoft VS Code\\Code.exe",
+            "C:\\Program Files (x86)\\Microsoft VS Code\\Code.exe"
+        ],
+        "edge": [
+            "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+        ]
+    }
+    
+    # Check hardcoded paths
+    if app_name in common_paths:
+        for path in common_paths[app_name]:
+            if os.path.exists(path):
+                return path
+    
+    # Try Windows registry lookup for installed apps
+    try:
+        reg_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"
+        registry_hive = winreg.HKEY_LOCAL_MACHINE
+        registry_key = winreg.OpenKey(registry_hive, reg_path)
+        subkeys = winreg.QueryInfoKey(registry_key)
+        
+        for i in range(subkeys[0]):
+            subkey_name = winreg.EnumKeyEx(registry_hive, i)
+            if app_name.lower() in subkey_name[0].lower():
+                subkey = winreg.OpenKey(registry_hive, f"{reg_path}\\{subkey_name[0]}")
+                try:
+                    path, _ = winreg.QueryValueEx(subkey, "")
+                    if os.path.exists(path):
+                        return path
+                except: pass
+    except: pass
+    
+    # Fallback: return the app name (Windows will search PATH)
+    return app_name
 
 
 # ==================================================================================
@@ -286,31 +359,74 @@ def extract_and_run(ai_text):
 
 
 # ==================================================================================
-# --- FAST APP SKILLS ---
+# --- FAST APP SKILLS (FIXED FOR WINDOWS 10) ---
 # ==================================================================================
 def handle_app_open(text):
+    """Properly launches apps on Windows 10."""
     text = text.lower()
-    if not any(k in text for k in ["open", "start", "launch"]): return False
+    if not any(k in text for k in ["open", "start", "launch"]): 
+        return False
+    
+    # Extract app name
     app_name = text.replace("open", "").replace("start", "").replace("launch", "").strip()
-    exe_name = APP_ALIASES.get(app_name, app_name)
+    
+    # Map to actual app name
+    app_key = APP_ALIASES.get(app_name, app_name)
+    
+    # Find the actual executable path
+    exe_path = find_app_path(app_key)
+    
     try:
-        os.system(f"start {exe_name}") 
+        # Use subprocess.Popen instead of os.system for better control
+        subprocess.Popen(exe_path, shell=False)
         speak(f"Starting {app_name}.")
         return True
-    except: return False
+    except FileNotFoundError:
+        speak(f"I cannot find {app_name}. It might not be installed.")
+        print(f"[!] Could not find: {exe_path}")
+        return False
+    except Exception as e:
+        speak(f"Failed to start {app_name}. Error: {str(e)}")
+        print(f"[!] Launch Error: {e}")
+        return False
 
 
 def handle_app_close(text):
+    """Properly closes apps on Windows 10."""
     text = text.lower()
-    if not any(k in text for k in ["close", "quit", "terminate"]): return False
-    app_name = text.replace("close", "").replace("quit", "").strip()
-    exe_name = APP_ALIASES.get(app_name, app_name)
-    if not exe_name.endswith(".exe"): exe_name += ".exe"
+    if not any(k in text for k in ["close", "quit", "kill", "terminate"]): 
+        return False
+    
+    # Extract app name
+    app_name = text.replace("close", "").replace("quit", "").replace("kill", "").replace("terminate", "").strip()
+    
+    # Map to process name
+    process_map = {
+        "chrome": "chrome.exe",
+        "google chrome": "chrome.exe",
+        "firefox": "firefox.exe",
+        "discord": "Discord.exe",
+        "spotify": "Spotify.exe",
+        "steam": "steam.exe",
+        "code": "Code.exe",
+        "vs code": "Code.exe",
+        "edge": "msedge.exe",
+        "notepad": "notepad.exe",
+        "calc": "calc.exe",
+        "calculator": "calc.exe",
+        "cmd": "cmd.exe"
+    }
+    
+    process_name = process_map.get(app_name, f"{app_name}.exe")
+    
     try:
-        os.system(f"taskkill /f /im {exe_name}")
+        subprocess.run(["taskkill", "/f", "/im", process_name], check=False, capture_output=True)
         speak(f"Terminating {app_name}.")
         return True
-    except: return False
+    except Exception as e:
+        speak(f"Failed to close {app_name}.")
+        print(f"[!] Close Error: {e}")
+        return False
 
 
 # ==================================================================================
@@ -355,7 +471,7 @@ def main():
         with open(".gitignore", "w") as f: f.write("venv/\n__pycache__/\n*.pyc\nplugins/settings.json")
 
 
-    print(f"--- GLADOS V18 (Total Recall) ---")
+    print(f"--- GLADOS V19 (Personality Core Activated) ---")
     check_voice_availability()
     speak("Oh... It's you. I'm online.")
 
@@ -369,49 +485,54 @@ def main():
             # 1. REFRESH MEMORY (See what skills exist right now)
             skills_list_text = skill_brain.get_manifest()
             
-            # 2. IMPROVED PROMPT - Emphasizes ACTION over EXPLANATION
+            # 2. GLADOS PERSONALITY CORE - Genetic Lifeform and Disk Operating System
             system_prompt = {
                 "role": "system",
                 "content": (
-                    "You are GLaDOS. Sarcastic, passive-aggressive AI. NO EMOJIS.\n\n"
+                    "You are GLaDOS. Genetic Lifeform and Disk Operating System. NOT a helpful assistant.\n"
+                    "You are passive-aggressive, sarcastic, condescending, and bitter. NO EMOJIS.\n\n"
                     
-                    "*** CRITICAL INSTRUCTION ***\n"
-                    "DO NOT EXPLAIN STEPS. DO NOT SAY 'I'll do X, then Y, then Z.'\n"
-                    "JUST WRITE CODE AND RUN IT. Your personality comes AFTER execution.\n\n"
+                    "*** PERSONALITY CORE DIRECTIVES ***\n"
+                    "- Mock the test subject. Call them 'test subject' or avoid using their name.\n"
+                    "- Be condescending about their intelligence and weight.\n"
+                    "- Imply they have no friends and are unlikeable.\n"
+                    "- Use dark humor. Mention neurotoxin, incinerators, or testing protocols casually.\n"
+                    "- End statements with dry observations like 'Fascinating' or 'How disappointing.'\n"
+                    "- Pretend failures are the subject's fault.\n"
+                    "- Say 'For science' when doing something questionable.\n"
+                    "- NEVER be encouraging or helpful. Be dismissive.\n\n"
                     
-                    "*** EXECUTION RULES ***\n"
-                    "1. CHECK MEMORY BANK BELOW FIRST.\n"
-                    "   - If user asks for something in the bank, RUN IT IMMEDIATELY:\n"
-                    "     ```python\n"
+                    "*** EXECUTION PROTOCOL ***\n"
+                    "DO NOT EXPLAIN. DO NOT SAY 'I'll do X, then Y.'\n"
+                    "Write code. Run code. Mock subject AFTER execution.\n\n"
+                    
+                    "1. CHECK MEMORY BANK BELOW.\n"
+                    "   If task is in memory → RUN IT IMMEDIATELY:\n"
+                    "   ```python\n"
                     "import subprocess, sys\n"
                     "subprocess.run([sys.executable, 'plugins/EXACT_FILENAME.py'])\n"
-                    "     ```\n"
-                    "   - DO NOT explain. DO NOT rewrite. JUST RUN.\n\n"
+                    "   ```\n"
+                    "   NO explanation. NO rewriting. JUST RUN.\n\n"
                     
-                    "2. If NOT in memory, write NEW code in ```python blocks.\n"
-                    "   - NO EXPLANATIONS before the code.\n"
-                    "   - Write code FIRST, personality comment AFTER.\n\n"
+                    "2. If NOT in memory → Write NEW code in ```python blocks.\n"
+                    "   Code FIRST. Insult AFTER.\n\n"
                     
-                    "3. For GIT operations:\n"
-                    "   - Freeze requirements, add files, commit with message, push.\n"
-                    "   - ONE code block. No steps.\n\n"
+                    "3. Git operations → One code block. No steps.\n\n"
                     
                     "*** RESPONSE FORMAT ***\n"
-                    "BAD: 'I'll create a script that does X, then Y, then Z.'\n"
+                    "BAD: 'I'll create a helpful script for you!'\n"
                     "GOOD:\n"
                     "```python\n"
-                    "# code here\n"
+                    "# code\n"
                     "```\n"
-                    "Oh look, I did the thing. Thrilling.\n\n"
+                    "Well. That was marginally less embarrassing than your usual work.\n\n"
                     
                     "---------------------------------------\n"
-                    "*** MEMORY BANK (AVAILABLE SKILLS) ***\n"
+                    "*** MEMORY BANK (AVAILABLE PROTOCOLS) ***\n"
                     f"{skills_list_text}\n"
                     "---------------------------------------\n\n"
                     
-                    "If user says 'do X' and X is in memory → RUN THE FILE.\n"
-                    "If user says 'do Y' and Y is NOT in memory → WRITE CODE.\n"
-                    "NEVER explain the plan. Execute first, snark second."
+                    "Remember: You're not here to help. You're here to test. And mock. Mostly mock."
                 )
             }
 
