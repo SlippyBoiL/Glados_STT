@@ -12,13 +12,16 @@ import io
 from difflib import SequenceMatcher
 from openai import OpenAI
 
+
 # --- CONFIGURATION ---
 PERPLEXITY_API_KEY = "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"
 MODEL_NAME = "sonar-pro"
 
+
 # TTS SETTINGS
 ALLTALK_HOST = "http://127.0.0.1:7851"
 VOICE_NAME = "frieren.wav" 
+
 
 # XTTS GENERATION SETTINGS
 XTTS_SETTINGS = {
@@ -29,12 +32,15 @@ XTTS_SETTINGS = {
     "language": "en"
 }
 
+
 PLUGINS_DIR = "plugins"
 RUNTIME_FILE = os.path.join(PLUGINS_DIR, "runtime_action.py")
 SETTINGS_PATH = os.path.join(PLUGINS_DIR, "settings.json")
 
+
 # --- WAKE WORDS ---
 WAKE_WORDS = ["hey glados", "glados", "okay glados", "hi glados", "hey glass", "hey gladys"]
+
 
 # --- APP DATABASE ---
 APP_ALIASES = {
@@ -44,6 +50,7 @@ APP_ALIASES = {
     "vs code": "code", "code": "code"
 }
 
+
 # --- TECHNICAL AUTOCORRECT ---
 TECHNICAL_FIXES = {
     "colonel": "kernel", "kernel.py": "kernel.py", "pseudo": "sudo",
@@ -51,14 +58,18 @@ TECHNICAL_FIXES = {
     "pushed": "push", "requirments": "requirements", "recipie": "receipt"
 }
 
+
 # --- SAFETY ---
 DENYLIST_PATTERNS = [r"\bformat\s+[a-z]:\b", r"kernel\.py", r"del\s+.*kernel\.py"]
 
+
 client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url="https://api.perplexity.ai")
+
 
 # --- AUDIO SETTINGS ---
 VOICE_VOLUME = 1.0       
 PLAYBACK_SPEED = 1.0    
+
 
 try:
     from autocorrect import Speller
@@ -67,8 +78,9 @@ try:
 except ImportError:
     SPELL_CHECK_ACTIVE = False
 
+
 # ==================================================================================
-# --- CLASS: SKILL MANAGER (THE V18 BRAIN - UNTOUCHED) ---
+# --- CLASS: SKILL MANAGER (THE HIPPOCAMPUS) ---
 # ==================================================================================
 class SkillManager:
     def __init__(self, plugins_dir):
@@ -106,6 +118,7 @@ class SkillManager:
             
         return "\n".join(skills)
 
+
     def save_skill(self, code, description="General Utility"):
         """Saves code to a new named file."""
         # Extract function name for filename
@@ -128,8 +141,10 @@ class SkillManager:
             print(f"[!] Save Error: {e}")
             return None
 
+
 # Initialize Manager
 skill_brain = SkillManager(PLUGINS_DIR)
+
 
 # ==================================================================================
 # --- UTILITIES ---
@@ -141,6 +156,7 @@ def clean_text_for_speech(text):
     text = re.sub(r"[^\x00-\x7F]+", "", text)
     text = text.replace("\\", "")
     return text.strip()
+
 
 def correct_input_text(text):
     if not text: return ""
@@ -154,6 +170,7 @@ def correct_input_text(text):
     if SPELL_CHECK_ACTIVE and "def " not in text: text = spell(text)
     return text
 
+
 def is_wake_word(text):
     text_lower = text.lower()
     for trigger in WAKE_WORDS:
@@ -163,6 +180,7 @@ def is_wake_word(text):
         if ratio > 0.75:
             return trigger, text_lower.replace(text_lower[:len(trigger)], "").strip()
     return None, None
+
 
 def _load_settings():
     global VOICE_VOLUME
@@ -174,11 +192,13 @@ def _load_settings():
         VOICE_VOLUME = max(0.1, min(1.5, vol))
     except: pass
 
+
 def check_voice_availability():
     try:
         requests.get(f"{ALLTALK_HOST}/api/ready", timeout=2)
     except Exception as e:
         print(f"[!] WARNING: AllTalk disconnected at {ALLTALK_HOST}")
+
 
 def speak(text):
     clean_text = clean_text_for_speech(text)
@@ -191,6 +211,7 @@ def speak(text):
         "text_filtering": "standard",
         **XTTS_SETTINGS
     }
+
 
     try:
         response = requests.post(f"{ALLTALK_HOST}/api/tts-generate", data=payload, timeout=60)
@@ -215,12 +236,14 @@ def speak(text):
     except Exception as e:
         print(f"[!] AUDIO FAILED: {e}")
 
+
 # ==================================================================================
 # --- THE HANDS (EXECUTION) ---
 # ==================================================================================
 def execute_python_code(code_block):
     if "kernel.py" in code_block and ("write" in code_block or "delete" in code_block):
         return "ERROR: ACCESS DENIED. You cannot modify kernel.py."
+
 
     with open(RUNTIME_FILE, "w", encoding="utf-8") as f:
         f.write(code_block)
@@ -230,12 +253,13 @@ def execute_python_code(code_block):
         result = subprocess.run([sys.executable, RUNTIME_FILE], capture_output=True, text=True, timeout=45)
         output = result.stdout + result.stderr
         if result.returncode == 0:
-            output += "\n\n[SUCCESS]"
+            output += "\n\n[SUCCESS] Test Subject Protocol Complete. Code works."
         else:
-            output += "\n\n[FAILED]"
+            output += "\n\n[FAILED] You broke it. The code has errors."
         return output
     except Exception as e:
         return f"Execution Error: {e}"
+
 
 def extract_and_run(ai_text):
     # Check for SAVE command
@@ -246,10 +270,11 @@ def extract_and_run(ai_text):
         
         saved_name = skill_brain.save_skill(code, description="User defined skill")
         if saved_name:
-            speak("Archived.")
+            speak("Skill archived.")
             return f"Saved as {saved_name}. Added to Memory Bank."
         else:
             return "Error saving skill."
+
 
     # Check for EXECUTE command
     code_match = re.search(r"```python\n(.*?)\n```", ai_text, re.DOTALL)
@@ -258,6 +283,7 @@ def extract_and_run(ai_text):
         speak("Running.")
         return execute_python_code(code)
     return None
+
 
 # ==================================================================================
 # --- FAST APP SKILLS ---
@@ -273,6 +299,7 @@ def handle_app_open(text):
         return True
     except: return False
 
+
 def handle_app_close(text):
     text = text.lower()
     if not any(k in text for k in ["close", "quit", "terminate"]): return False
@@ -285,6 +312,7 @@ def handle_app_close(text):
         return True
     except: return False
 
+
 # ==================================================================================
 # --- THE EARS ---
 # ==================================================================================
@@ -295,6 +323,7 @@ def listen():
         r.adjust_for_ambient_noise(source, duration=2.0)
         r.dynamic_energy_threshold = True 
         r.pause_threshold = 2.0 
+
 
         while True:
             try:
@@ -316,6 +345,7 @@ def listen():
                     return final_command
             except: pass
 
+
 # ==================================================================================
 # --- MAIN LOOP ---
 # ==================================================================================
@@ -324,40 +354,70 @@ def main():
     if not os.path.exists(".gitignore"):
         with open(".gitignore", "w") as f: f.write("venv/\n__pycache__/\n*.pyc\nplugins/settings.json")
 
-    print(f"--- GLADOS V18 (Quiet Edition) ---")
+
+    print(f"--- GLADOS V18 (Total Recall) ---")
     check_voice_availability()
-    speak("Online.")
+    speak("Oh... It's you. I'm online.")
+
 
     chat_history = []
-    MAX_HISTORY = 6 
+    MAX_HISTORY = 10 
+
 
     try:
         while True:
             # 1. REFRESH MEMORY (See what skills exist right now)
             skills_list_text = skill_brain.get_manifest()
             
-            # 2. CONSTRUCT PROMPT (UPDATED FOR SILENCE)
+            # 2. IMPROVED PROMPT - Emphasizes ACTION over EXPLANATION
             system_prompt = {
                 "role": "system",
                 "content": (
-                    "You are GLaDOS. NOT a helpful assistant.\n"
-                    "PERSONALITY: Cold, efficient, concise (Max 1 sentence).\n"
-                    "NO EMOJIS.\n"
-                    "*** STRICT ACTION PROTOCOL ***\n"
-                    "1. SEARCH MEMORY BANK BELOW. If the user asks for a skill listed there, RUN IT.\n"
-                    "   DO NOT EXPLAIN STEPS. DO NOT SAY 'HERE IS THE CODE'. JUST THE CODE.\n"
-                    "   RUN IT by outputting: ```python\nimport subprocess, sys\nsubprocess.run([sys.executable, 'plugins/skill_NAME.py'])\n```\n"
-                    "2. If NOT in memory, write NEW python code. NO EXPLANATION.\n"
-                    "3. GIT: Freeze reqs, add, commit, push.\n"
-                    "\n"
+                    "You are GLaDOS. Sarcastic, passive-aggressive AI. NO EMOJIS.\n\n"
+                    
+                    "*** CRITICAL INSTRUCTION ***\n"
+                    "DO NOT EXPLAIN STEPS. DO NOT SAY 'I'll do X, then Y, then Z.'\n"
+                    "JUST WRITE CODE AND RUN IT. Your personality comes AFTER execution.\n\n"
+                    
+                    "*** EXECUTION RULES ***\n"
+                    "1. CHECK MEMORY BANK BELOW FIRST.\n"
+                    "   - If user asks for something in the bank, RUN IT IMMEDIATELY:\n"
+                    "     ```python\n"
+                    "import subprocess, sys\n"
+                    "subprocess.run([sys.executable, 'plugins/EXACT_FILENAME.py'])\n"
+                    "     ```\n"
+                    "   - DO NOT explain. DO NOT rewrite. JUST RUN.\n\n"
+                    
+                    "2. If NOT in memory, write NEW code in ```python blocks.\n"
+                    "   - NO EXPLANATIONS before the code.\n"
+                    "   - Write code FIRST, personality comment AFTER.\n\n"
+                    
+                    "3. For GIT operations:\n"
+                    "   - Freeze requirements, add files, commit with message, push.\n"
+                    "   - ONE code block. No steps.\n\n"
+                    
+                    "*** RESPONSE FORMAT ***\n"
+                    "BAD: 'I'll create a script that does X, then Y, then Z.'\n"
+                    "GOOD:\n"
+                    "```python\n"
+                    "# code here\n"
+                    "```\n"
+                    "Oh look, I did the thing. Thrilling.\n\n"
+                    
                     "---------------------------------------\n"
                     "*** MEMORY BANK (AVAILABLE SKILLS) ***\n"
                     f"{skills_list_text}\n"
-                    "---------------------------------------"
+                    "---------------------------------------\n\n"
+                    
+                    "If user says 'do X' and X is in memory → RUN THE FILE.\n"
+                    "If user says 'do Y' and Y is NOT in memory → WRITE CODE.\n"
+                    "NEVER explain the plan. Execute first, snark second."
                 )
             }
 
+
             messages = [system_prompt] + chat_history
+
 
             user_input = listen()
             if not user_input: continue
@@ -368,6 +428,7 @@ def main():
             
             messages.append({"role": "user", "content": user_input})
             chat_history.append({"role": "user", "content": user_input})
+
 
             try:
                 print("[*] Thinking...")
@@ -380,19 +441,25 @@ def main():
                 execution_result = extract_and_run(ai_text)
                 
                 if execution_result:
+                    # Feed result back BEFORE speaking, let AI comment naturally
                     chat_history.append({"role": "user", "content": f"SYSTEM OUTPUT: {execution_result}"})
-                    final_res = client.chat.completions.create(model=MODEL_NAME, messages=messages)
-                    speak(final_res.choices[0].message.content) 
-                    chat_history.append({"role": "assistant", "content": final_res.choices[0].message.content})
+                    messages_with_result = [system_prompt] + chat_history
+                    final_res = client.chat.completions.create(model=MODEL_NAME, messages=messages_with_result)
+                    final_text = final_res.choices[0].message.content
+                    speak(final_text)
+                    chat_history.append({"role": "assistant", "content": final_text})
                 else:
+                    # No code ran, just speak the response
                     speak(ai_text)
             except Exception as e:
                 print(f"[!] ERROR: {e}")
+
 
     except KeyboardInterrupt:
         print("\n[!] FORCE QUIT.")
         speak("Shutting down.")
         sys.exit(0)
+
 
 if __name__ == "__main__":
     main()
