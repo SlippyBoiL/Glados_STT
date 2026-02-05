@@ -17,6 +17,8 @@ from openai import OpenAI
 # --- CONFIGURATION ---
 PERPLEXITY_API_KEY = "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"
 MODEL_NAME = "sonar-pro"
+GOVEE_API_KEY = "a2e66167-cbe7-4416-93f7-d54c7f92c7b6"
+GOVEE_API_BASE = "https://openapi.api.govee.com/router/api/v1"
 
 
 # TTS SETTINGS
@@ -59,6 +61,47 @@ APP_ALIASES = {
     "steam": "steam",
     "vs code": "code",
     "code": "code"
+}
+
+
+# --- GOVEE DEVICES ---
+GOVEE_DEVICES = {
+    "bedroom bulb": "21:35:D0:C9:07:3F:BB:DC",
+    "bedroom": "21:35:D0:C9:07:3F:BB:DC",
+    "bed lights": "31:29:D0:D0:F5:C1:33:D2",
+    "bed": "31:29:D0:D0:F5:C1:33:D2",
+    "tv backlight": "35:37:D0:C8:05:06:34:96",
+    "tv": "35:37:D0:C8:05:06:34:96",
+    "strip light": "0D:FC:C6:75:6E:0E:81:88",
+    "strip": "0D:FC:C6:75:6E:0E:81:88",
+    "closet bulb": "63:59:D0:C9:07:47:C9:FB",
+    "closet": "63:59:D0:C9:07:47:C9:FB",
+    "group": "11292043",
+    "all": "11292043",
+    "bedtime": "10827426",
+    "dreamview 2": "9603872",
+    "dreamview": "8349970",
+    "dreamview 1": "8348864",
+}
+
+# Color names to RGB
+COLOR_MAP = {
+    "red": 16711680,
+    "green": 65280,
+    "blue": 255,
+    "white": 16777215,
+    "yellow": 16776960,
+    "cyan": 65535,
+    "magenta": 16711935,
+    "purple": 8388607,
+    "orange": 16753920,
+    "pink": 16761035,
+}
+
+# Color temperature
+TEMP_MAP = {
+    "warm": 4500,
+    "cool": 6500,
 }
 
 
@@ -217,6 +260,128 @@ def find_app_path(app_name):
     
     # Fallback: return the app name (Windows will search PATH)
     return app_name
+
+
+# ==================================================================================
+# --- GOVEE LIGHT CONTROL (FIXED) ---
+# ==================================================================================
+def govee_control(device_name, action, value=None):
+    """Control Govee lights via API - FIXED with SKU support."""
+    device_name_lower = device_name.lower().strip()
+    device_id = GOVEE_DEVICES.get(device_name_lower)
+    
+    if not device_id:
+        return f"Unknown device: {device_name}. Try: bedroom, bed, tv, strip, closet, all"
+    
+    # SKU mapping (model numbers required by Govee API)
+    DEVICE_SKUS = {
+        "21:35:D0:C9:07:3F:BB:DC": "H6009",  # bedroom bulb
+        "31:29:D0:D0:F5:C1:33:D2": "H6076",  # bed lights
+        "35:37:D0:C8:05:06:34:96": "H6199",  # tv backlight
+        "0D:FC:C6:75:6E:0E:81:88": "H6104",  # strip light
+        "63:59:D0:C9:07:47:C9:FB": "H6009",  # closet bulb
+        "11292043": "SameModeGroup",  # group
+        "10827426": "SameModeGroup",  # bedtime
+        "9603872": "DreamViewScenic",  # dreamview 2
+        "8349970": "DreamViewScenic",  # dreamview
+        "8348864": "DreamViewScenic",  # dreamview 1
+    }
+    
+    sku = DEVICE_SKUS.get(device_id, "H6009")
+    
+    headers = {
+        "Govee-API-Key": GOVEE_API_KEY,
+        "Content-Type": "application/json"
+    }
+    
+    url = f"{GOVEE_API_BASE}/device/control"
+    action_lower = action.lower().strip()
+    
+    payload = None
+    
+    try:
+        if action_lower in ["on", "off"]:
+            payload = {
+                "requestId": str(int(time.time() * 1000)),
+                "payload": {
+                    "sku": sku,
+                    "device": device_id,
+                    "capability": {
+                        "type": "devices.capabilities.on_off",
+                        "instance": "powerSwitch",
+                        "value": 1 if action_lower == "on" else 0
+                    }
+                }
+            }
+        
+        elif action_lower == "brightness" or (value and "%" in str(value)):
+            brightness = int(str(value).replace("%", "").strip()) if value else 50
+            brightness = max(1, min(100, brightness))
+            payload = {
+                "requestId": str(int(time.time() * 1000)),
+                "payload": {
+                    "sku": sku,
+                    "device": device_id,
+                    "capability": {
+                        "type": "devices.capabilities.range",
+                        "instance": "brightness",
+                        "value": brightness
+                    }
+                }
+            }
+        
+        elif action_lower in COLOR_MAP or action_lower in TEMP_MAP:
+            if action_lower in TEMP_MAP:
+                payload = {
+                    "requestId": str(int(time.time() * 1000)),
+                    "payload": {
+                        "sku": sku,
+                        "device": device_id,
+                        "capability": {
+                            "type": "devices.capabilities.color_setting",
+                            "instance": "colorTemperatureK",
+                            "value": TEMP_MAP[action_lower]
+                        }
+                    }
+                }
+            else:
+                payload = {
+                    "requestId": str(int(time.time() * 1000)),
+                    "payload": {
+                        "sku": sku,
+                        "device": device_id,
+                        "capability": {
+                            "type": "devices.capabilities.color_setting",
+                            "instance": "colorRgb",
+                            "value": COLOR_MAP[action_lower]
+                        }
+                    }
+                }
+        else:
+            return f"Unknown action: {action}"
+        
+        if not payload:
+            return f"Could not parse command: {action}"
+        
+        print(f"[DEBUG] Sending payload: {json.dumps(payload, indent=2)}")
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        
+        print(f"[DEBUG] Response status: {response.status_code}")
+        print(f"[DEBUG] Response body: {response.text}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("code") == 200:
+                return f"Lights adjusted: {device_name} → {action}"
+            else:
+                return f"API error: {data.get('msg', 'Unknown error')}"
+        else:
+            return f"[ERROR {response.status_code}] {response.text[:100]}"
+    
+    except Exception as e:
+        return f"[EXCEPTION] {str(e)}"
+
 
 
 # ==================================================================================
@@ -430,6 +595,64 @@ def handle_app_close(text):
 
 
 # ==================================================================================
+# --- LIGHT CONTROL HANDLER ---
+# ==================================================================================
+def handle_light_command(text):
+    """Parse and execute light commands."""
+    text_lower = text.lower()
+    
+    # Check if it's a light command
+    if not any(k in text_lower for k in ["light", "lights", "bulb", "strip", "bedroom", "bed", "tv", "closet"]):
+        return False
+    
+    # Extract device and action
+    device = None
+    action = None
+    
+    # Find device name
+    for key in sorted(GOVEE_DEVICES.keys(), key=len, reverse=True):  # Longest first to avoid partial matches
+        if key in text_lower:
+            device = key
+            break
+    
+    if not device:
+        device = "all"  # Default to all lights
+    
+    # Find action
+    if "on" in text_lower and "off" not in text_lower:
+        action = "on"
+    elif "off" in text_lower:
+        action = "off"
+    elif any(color in text_lower for color in COLOR_MAP.keys()):
+        for color in COLOR_MAP.keys():
+            if color in text_lower:
+                action = color
+                break
+    elif any(temp in text_lower for temp in TEMP_MAP.keys()):
+        for temp in TEMP_MAP.keys():
+            if temp in text_lower:
+                action = temp
+                break
+    elif "%" in text_lower or "brightness" in text_lower:
+        # Extract percentage
+        match = re.search(r'(\d+)%', text_lower)
+        if match:
+            action = "brightness"
+            value = match.group(1) + "%"
+        else:
+            action = "brightness"
+            value = "50%"
+    
+    if not action:
+        return False
+    
+    # Execute command
+    result = govee_control(device, action, value if action == "brightness" else None)
+    speak(result)
+    return True
+
+
+# ==================================================================================
 # --- THE EARS ---
 # ==================================================================================
 def listen():
@@ -471,7 +694,7 @@ def main():
         with open(".gitignore", "w") as f: f.write("venv/\n__pycache__/\n*.pyc\nplugins/settings.json")
 
 
-    print(f"--- GLADOS V19 (Personality Core Activated) ---")
+    print(f"--- GLADOS V20.1 (Govee Fixed) ---")
     check_voice_availability()
     speak("Oh... It's you. I'm online.")
 
@@ -546,6 +769,7 @@ def main():
             
             if handle_app_open(user_input): continue
             if handle_app_close(user_input): continue
+            if handle_light_command(user_input): continue
             
             messages.append({"role": "user", "content": user_input})
             chat_history.append({"role": "user", "content": user_input})
