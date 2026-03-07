@@ -1,0 +1,75 @@
+import os
+import time
+import google.generativeai as genai
+
+# Ensure your brain is using the updated model
+MODEL_NAME = "gemini-2.5-flash"
+genai.configure(api_key="AIzaSyCw0WHTcjE1SFivUs6EZ5raqZ7gW62KBS0")
+model = genai.GenerativeModel(MODEL_NAME)
+
+SKILLS_DIR = "skills"
+
+def get_existing_skills():
+    """Checks the inventory of current skills to prevent duplicates."""
+    if not os.path.exists(SKILLS_DIR):
+        os.makedirs(SKILLS_DIR)
+    
+    existing_files = []
+    for filename in os.listdir(SKILLS_DIR):
+        if filename.endswith(".py"):
+            # Optionally, you could open the file and read the first few lines 
+            # to give the AI even more context, but filenames are a good start.
+            existing_files.append(filename)
+    return existing_files
+
+def draft_and_assemble_skill():
+    """The core automation pipeline that drafts and saves new code."""
+    inventory = get_existing_skills()
+    inventory_str = ", ".join(inventory) if inventory else "None"
+    
+    print(f"[*] Current inventory: {inventory_str}")
+    print("[*] Drafting new skill...")
+    
+    # We explicitly tell it what we already have so it manufactures something new
+    prompt = f"""
+    You are an autonomous Python developer for an AI assistant.
+    The assistant currently has these skills in its directory: {inventory_str}.
+    
+    Write a completely new, unique Python script for a helpful AI skill that DOES NOT duplicate the existing ones.
+    Provide ONLY valid, raw Python code. Do not include markdown blocks like ```python, and do not provide any explanations.
+    """
+    
+    try:
+        response = model.generate_content(prompt)
+        # Clean up the output in case the AI ignores the "no markdown" rule
+        code = response.text.replace("```python", "").replace("```", "").strip()
+        
+        # Ask the AI to name the file based on the code it just wrote
+        name_prompt = f"Based on this Python code, provide a short, snake_case filename ending in .py. Reply with ONLY the filename:\n\n{code[:200]}"
+        name_response = model.generate_content(name_prompt)
+        filename = name_response.text.strip().replace("```", "").strip()
+        
+        if not filename.endswith(".py"):
+            filename += ".py"
+            
+        # Assemble the final file
+        filepath = os.path.join(SKILLS_DIR, filename)
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(code)
+            
+        print(f"[+] Successfully manufactured new skill: {filename}\n")
+        
+    except Exception as e:
+        print(f"[!] Assembly line error: {e}\n")
+
+def run_factory():
+    print("Starting the autonomous skill pipeline. Press Ctrl+C to stop.")
+    while True:
+        draft_and_assemble_skill()
+        # CRITICAL: You must include a sleep timer. 
+        # If it runs too fast, the Google API will block your key for rate limiting.
+        print("[*] Cooling down for 60 seconds...")
+        time.sleep(60) 
+
+if __name__ == "__main__":
+    run_factory()

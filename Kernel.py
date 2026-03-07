@@ -12,11 +12,14 @@ import io
 import winreg
 from difflib import SequenceMatcher
 from openai import OpenAI
+import tensorflow as tf
+import numpy as np
+import omni_brain
 
 
 # --- CONFIGURATION ---
-PERPLEXITY_API_KEY = "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"
-MODEL_NAME = "sonar-pro"
+PERPLEXITY_API_KEY = "ollama"
+MODEL_NAME = "llama3.2"
 GOVEE_API_KEY = "a2e66167-cbe7-4416-93f7-d54c7f92c7b6"
 GOVEE_API_BASE = "https://openapi.api.govee.com/router/api/v1"
 
@@ -116,9 +119,8 @@ TECHNICAL_FIXES = {
 # --- SAFETY ---
 DENYLIST_PATTERNS = [r"\bformat\s+[a-z]:\b", r"kernel\.py", r"del\s+.*kernel\.py"]
 
-
-client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url="https://api.perplexity.ai")
-
+# Reroute to your local machine's port 11434
+client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url="http://localhost:11434/v1")
 
 # --- AUDIO SETTINGS ---
 VOICE_VOLUME = 1.0       
@@ -524,133 +526,71 @@ def extract_and_run(ai_text):
 
 
 # ==================================================================================
-# --- FAST APP SKILLS (FIXED FOR WINDOWS 10) ---
+# --- FAST APP SKILLS (OMNI-BRAIN POWERED) ---
 # ==================================================================================
 def handle_app_open(text):
-    """Properly launches apps on Windows 10."""
     text = text.lower()
-    if not any(k in text for k in ["open", "start", "launch"]): 
-        return False
+    # Strip out all known action verbs so only the app name is left
+    app_name = re.sub(r"\b(open|start|launch|fire up|boot up|run|up)\b", "", text).strip()
     
-    # Extract app name
-    app_name = text.replace("open", "").replace("start", "").replace("launch", "").strip()
-    
-    # Map to actual app name
     app_key = APP_ALIASES.get(app_name, app_name)
-    
-    # Find the actual executable path
     exe_path = find_app_path(app_key)
-    
     try:
-        # Use subprocess.Popen instead of os.system for better control
         subprocess.Popen(exe_path, shell=False)
         speak(f"Starting {app_name}.")
         return True
-    except FileNotFoundError:
-        speak(f"I cannot find {app_name}. It might not be installed.")
-        print(f"[!] Could not find: {exe_path}")
+    except:
         return False
-    except Exception as e:
-        speak(f"Failed to start {app_name}. Error: {str(e)}")
-        print(f"[!] Launch Error: {e}")
-        return False
-
 
 def handle_app_close(text):
-    """Properly closes apps on Windows 10."""
     text = text.lower()
-    if not any(k in text for k in ["close", "quit", "kill", "terminate"]): 
-        return False
+    # Strip out all destructive action verbs
+    app_name = re.sub(r"\b(close|quit|kill|terminate|destroy|shut down|stop|exit)\b", "", text).strip()
     
-    # Extract app name
-    app_name = text.replace("close", "").replace("quit", "").replace("kill", "").replace("terminate", "").strip()
-    
-    # Map to process name
     process_map = {
-        "chrome": "chrome.exe",
-        "google chrome": "chrome.exe",
-        "firefox": "firefox.exe",
-        "discord": "Discord.exe",
-        "spotify": "Spotify.exe",
-        "steam": "steam.exe",
-        "code": "Code.exe",
-        "vs code": "Code.exe",
-        "edge": "msedge.exe",
-        "notepad": "notepad.exe",
-        "calc": "calc.exe",
-        "calculator": "calc.exe",
-        "cmd": "cmd.exe"
+        "chrome": "chrome.exe", "discord": "Discord.exe", "spotify": "Spotify.exe",
+        "steam": "steam.exe", "code": "Code.exe", "notepad": "notepad.exe",
+        "calc": "calc.exe", "calculator": "calc.exe"
     }
-    
     process_name = process_map.get(app_name, f"{app_name}.exe")
     
     try:
         subprocess.run(["taskkill", "/f", "/im", process_name], check=False, capture_output=True)
         speak(f"Terminating {app_name}.")
         return True
-    except Exception as e:
-        speak(f"Failed to close {app_name}.")
-        print(f"[!] Close Error: {e}")
+    except:
         return False
-
 
 # ==================================================================================
 # --- LIGHT CONTROL HANDLER ---
 # ==================================================================================
 def handle_light_command(text):
-    """Parse and execute light commands."""
     text_lower = text.lower()
+    # We removed the strict "if light in text" check because the Omni-Brain already verified it!
     
-    # Check if it's a light command
-    if not any(k in text_lower for k in ["light", "lights", "bulb", "strip", "bedroom", "bed", "tv", "closet"]):
-        return False
-    
-    # Extract device and action
-    device = None
-    action = None
-    
-    # Find device name
-    for key in sorted(GOVEE_DEVICES.keys(), key=len, reverse=True):  # Longest first to avoid partial matches
+    device = "all" # Default
+    for key in sorted(GOVEE_DEVICES.keys(), key=len, reverse=True): 
         if key in text_lower:
             device = key
             break
-    
-    if not device:
-        device = "all"  # Default to all lights
-    
-    # Find action
-    if "on" in text_lower and "off" not in text_lower:
-        action = "on"
-    elif "off" in text_lower:
-        action = "off"
-    elif any(color in text_lower for color in COLOR_MAP.keys()):
-        for color in COLOR_MAP.keys():
-            if color in text_lower:
-                action = color
-                break
-    elif any(temp in text_lower for temp in TEMP_MAP.keys()):
-        for temp in TEMP_MAP.keys():
-            if temp in text_lower:
-                action = temp
-                break
+            
+    action = None
+    if "on" in text_lower and "off" not in text_lower: action = "on"
+    elif "off" in text_lower: action = "off"
+    elif any(c in text_lower for c in COLOR_MAP.keys()):
+        action = next(c for c in COLOR_MAP.keys() if c in text_lower)
+    elif any(t in text_lower for t in TEMP_MAP.keys()):
+        action = next(t for t in TEMP_MAP.keys() if t in text_lower)
     elif "%" in text_lower or "brightness" in text_lower:
-        # Extract percentage
         match = re.search(r'(\d+)%', text_lower)
-        if match:
-            action = "brightness"
-            value = match.group(1) + "%"
-        else:
-            action = "brightness"
-            value = "50%"
-    
-    if not action:
-        return False
-    
-    # Execute command
-    result = govee_control(device, action, value if action == "brightness" else None)
-    speak(result)
-    return True
-
+        action = "brightness"
+        value = match.group(1) + "%" if match else "50%"
+        
+    if action:
+        result = govee_control(device, action, value if action == "brightness" else None)
+        speak(result)
+        return True
+    return False
 
 # ==================================================================================
 # --- THE EARS ---
@@ -767,10 +707,29 @@ def main():
             if not user_input: continue
             if "exit" in user_input.lower(): raise KeyboardInterrupt
             
-            if handle_app_open(user_input): continue
-            if handle_app_close(user_input): continue
-            if handle_light_command(user_input): continue
-            
+            # --- THE OMNI-BRAIN INTENT CLASSIFIER ---
+            print("[*] Omni-Brain analyzing intent...")
+            model = omni_brain.get_model()
+            prediction = model.predict(tf.constant([user_input], dtype=tf.string), verbose=0)[0]
+            intent_id = int(np.argmax(prediction))
+            confidence = prediction[intent_id] * 100
+
+            categories = ["LIGHTS", "OPEN APP", "CLOSE APP", "CHAT / SKILLS"]
+            print(f"[*] Brain routed to: {categories[intent_id]} ({confidence:.2f}% confident)")
+
+            # If the neural network is reasonably confident, route it directly
+            if confidence > 45.0:
+                if intent_id == 0:  # Light Control
+                    handle_light_command(user_input)
+                    continue
+                elif intent_id == 1:  # Open App
+                    handle_app_open(user_input)
+                    continue
+                elif intent_id == 2:  # Close App
+                    handle_app_close(user_input)
+                    continue
+            # If it's Intent 3 (Chat) OR it's not confident enough, it falls through to Llama 3.2
+
             messages.append({"role": "user", "content": user_input})
             chat_history.append({"role": "user", "content": user_input})
 
