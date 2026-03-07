@@ -1,8 +1,3 @@
-# code
-import os
-import platform
+import subprocess, sys
 
-if platform.system() == 'Windows':
-    os.system('cmd /c "type nul > new_skills.txt"')
-else:
-    os.system('echo > new_skills.txt')
+subprocess.run([sys.executable, 'plugins/skill_push_to_the_github.py'])

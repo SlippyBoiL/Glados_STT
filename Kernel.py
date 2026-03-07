@@ -717,16 +717,18 @@ def main():
             categories = ["LIGHTS", "OPEN APP", "CLOSE APP", "CHAT / SKILLS"]
             print(f"[*] Brain routed to: {categories[intent_id]} ({confidence:.2f}% confident)")
 
-            # If the neural network is reasonably confident, route it directly
+            # If the neural network is reasonably confident, try routing it directly.
+            # Only skip Llama if a handler actually succeeds.
             if confidence > 45.0:
+                routed = False
                 if intent_id == 0:  # Light Control
-                    handle_light_command(user_input)
-                    continue
+                    routed = handle_light_command(user_input)
                 elif intent_id == 1:  # Open App
-                    handle_app_open(user_input)
-                    continue
+                    routed = handle_app_open(user_input)
                 elif intent_id == 2:  # Close App
-                    handle_app_close(user_input)
+                    routed = handle_app_close(user_input)
+
+                if routed:
                     continue
             # If it's Intent 3 (Chat) OR it's not confident enough, it falls through to Llama 3.2
 
