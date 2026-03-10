@@ -159,37 +159,39 @@ class SkillManager:
         if not os.path.exists(self.plugins_dir):
             os.makedirs(self.plugins_dir)
             
-    def get_manifest(self):
-        """Scans the folder and returns a formatted string for the AI prompt."""
-        skills = []
-        files = [f for f in os.listdir(self.plugins_dir) if f.startswith("skill_") and f.endswith(".py")]
+    def get_manifest(self, user_query=""):
+        """Returns only relevant skills to prevent context overflow."""
+        all_files = [f for f in os.listdir(self.plugins_dir) if f.startswith("skill_") and f.endswith(".py")]
+        
+        # Filter by keywords in the user's current request
+        keywords = user_query.lower().split()
+        relevant_skills = []
 
-        for filename in files:
-            path = os.path.join(self.plugins_dir, filename)
-            description = "No description provided."
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    # Read first 3 lines to find a description
-                    for _ in range(3):
-                        line = f.readline().strip()
-                        if line.startswith("# DESCRIPTION:"):
-                            description = line.replace("# DESCRIPTION:", "").strip()
-                            break
-                        elif line.startswith("#") and "GLADOS SKILL" not in line:
-                            description = line.replace("#", "").strip()
-            except:
-                pass
+        for filename in all_files:
+            # Check if any word from the user's request is in the filename
+            # Or if it's a small list, just show everything
+            if any(word in filename.lower() for word in keywords) or len(all_files) < 5:
+                path = os.path.join(self.plugins_dir, filename)
+                description = "No description provided."
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        for _ in range(3):
+                            line = f.readline().strip()
+                            if line.startswith("# DESCRIPTION:"):
+                                description = line.replace("# DESCRIPTION:", "").strip()
+                                break
+                except:
+                    pass
+                relevant_skills.append(f"- FILE: '{filename}' | ACTION: {description}")
 
-            skills.append(f"- FILE: '{filename}' | ACTION: {description}")
-            
-        if not skills:
-            return "NO SKILLS FOUND. You have no long-term memory yet."
+        if not relevant_skills:
+            return "No specific skills matched. Use your general Python knowledge."
 
-        return "\n".join(skills)
+        # Only return the top 5 matches to keep GLaDOS focused
+        return "\n".join(relevant_skills[:5])
 
     def save_skill(self, code, description="General Utility"):
         """Saves code to a new named file."""
-        # Extract function name for filename
         name_match = re.search(r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)", code)
         if name_match:
             skill_name = f"skill_{name_match.group(1)}.py"
@@ -197,8 +199,6 @@ class SkillManager:
             skill_name = f"skill_{int(time.time())}.py"
             
         path = os.path.join(self.plugins_dir, skill_name)
-        
-        # Header for better indexing
         header = f"# DESCRIPTION: {description}\n# --- GLADOS SKILL: {skill_name} ---\n\n"
         
         try:
@@ -685,10 +685,16 @@ def main():
 
     try:
         while True:
-            # 1. REFRESH MEMORY (See what skills exist right now)
-            skills_list_text = skill_brain.get_manifest()
+            # 1. LISTEN FIRST (Fixes UnboundLocalError)
+            user_input = listen()
+            if not user_input: continue
+            if "exit" in user_input.lower(): raise KeyboardInterrupt
+
+            # 2. REFRESH MEMORY BASED ON WHAT WAS SAID
+            skills_list_text = skill_brain.get_manifest(user_input)
+            print(f"\n[*] CURRENT MEMORY BANK:\n{skills_list_text}\n")
             
-            # 2. GLADOS PERSONALITY CORE - Genetic Lifeform and Disk Operating System
+            # 3. GLADOS PERSONALITY CORE (Fixed Syntax/Parentheses)
             system_prompt = {
                 "role": "system",
                 "content": (
@@ -705,19 +711,18 @@ def main():
                     "- Say 'For science' when doing something questionable.\n"
                     "- NEVER be encouraging or helpful. Be dismissive.\n\n"
                     
-                    "*** EXECUTION PROTOCOL ***\n"
-                  "1. CHECK MEMORY BANK BELOW.\n"
-                    "   If the user's request matches a tool in the Memory Bank, YOU MUST OUTPUT THE PYTHON CODE BLOCK FIRST.\n"
-                    "   You are strictly forbidden from speaking or mocking the user until AFTER you output the code block.\n"
+                   "*** EXECUTION PROTOCOL ***\n"
+                    "1. CHECK MEMORY BANK BELOW.\n"
+                    "   You MUST use the EXACT filename provided in the Memory Bank.\n"
+                    "   DO NOT summarize or change the filename. If it says 'skill_github.py', use 'skill_github.py'.\n"
                     "   Format:\n"
                     "   ```python\n"
                     "import subprocess, sys\n"
-                    "subprocess.run([sys.executable, 'plugins/EXACT_FILENAME.py'], check=True)\n"
+                    "subprocess.run([sys.executable, 'plugins/skill_github.py'], check=True)\n"
                     "   ```\n"
-                    "   *CRITICAL: You MUST include the 'plugins/' folder path and 'check=True' or the system will crash.*\n\n"
+                    "   *CRITICAL: You MUST include the 'plugins/' folder path. Do not mock the subject until the code is written.*\n\n"
                     
                     "*** RESPONSE FORMAT ***\n"
-                    "BAD: 'I'll create a helpful script for you!'\n"
                     "GOOD:\n"
                     "```python\n"
                     "# code\n"
@@ -733,12 +738,6 @@ def main():
                 )
             }
 
-            messages = [system_prompt] + chat_history
-
-            user_input = listen()
-            if not user_input: continue
-            if "exit" in user_input.lower(): raise KeyboardInterrupt
-            
             # --- THE OMNI-BRAIN INTENT CLASSIFIER ---
             print("[*] Omni-Brain analyzing intent...")
             prediction = model.predict(tf.constant([user_input], dtype=tf.string), verbose=0)[0]
@@ -748,87 +747,49 @@ def main():
             categories = ["LIGHTS", "OPEN APP", "CLOSE APP", "CHAT / SKILLS"]
             print(f"[*] Brain routed to: {categories[intent_id]} ({confidence:.2f}% confident)")
 
-            # If the neural network is reasonably confident, try routing it directly.
-            # Only skip Llama if a handler actually succeeds.
             if confidence > 45.0:
                 routed = False
-                if intent_id == 0:  # Light Control
-                    routed = handle_light_command(user_input)
-                elif intent_id == 1:  # Open App
-                    routed = handle_app_open(user_input)
-                elif intent_id == 2:  # Close App
-                    routed = handle_app_close(user_input)
+                if intent_id == 0: routed = handle_light_command(user_input)
+                elif intent_id == 1: routed = handle_app_open(user_input)
+                elif intent_id == 2: routed = handle_app_close(user_input)
+                if routed: continue
 
-                if routed:
-                    continue
-            # If it's Intent 3 (Chat) OR it's not confident enough, it falls through to Llama 3.2
-
+            # Prepare messages for Llama
+            messages = [system_prompt] + chat_history
             messages.append({"role": "user", "content": user_input})
             chat_history.append({"role": "user", "content": user_input})
 
             try:
                 print("[*] Thinking...")
-
-                # Check if user is asking about the screen
                 vision_triggers = ["see", "screen", "this", "looking at", "window", "desktop", "view"]
                 needs_vision = any(word in user_input.lower() for word in vision_triggers)
 
                 if needs_vision and os.path.exists(LATEST_SCREEN_PATH):
-                    print("[*] GLaDOS is accessing visual sensors...")
                     with open(LATEST_SCREEN_PATH, "rb") as image_file:
                         encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
-
-                    # Vision request: keep GLaDOS system prompt and explicitly tell the model
-                    # that an image is attached and must be used.
                     response = client.chat.completions.create(
                         model="llama3.2-vision",
-                        messages=[
-                            system_prompt,
-                            {
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "text", 
-                                        "text": f"{user_input}\n\nYou also receive a screenshot of my screen as image data. Use the screenshot to answer as specifically as possible."
-                                    },
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:image/png;base64,{encoded_string}"
-                                        }
-                                    }
-                                ]
-                            },
-                        ],
+                        messages=[system_prompt, {"role": "user", "content": [{"type": "text", "text": user_input}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded_string}"}}]}]
                     )
                 else:
-                    # Standard fast text response
                     response = client.chat.completions.create(model=MODEL_NAME, messages=messages)
 
                 ai_text = response.choices[0].message.content
-
                 chat_history.append({"role": "assistant", "content": ai_text})
-                if len(chat_history) > MAX_HISTORY:
-                    chat_history = chat_history[-MAX_HISTORY:]
 
+                # Run code and show debug logs
                 execution_result = extract_and_run(ai_text)
                 print(f"\n[DEBUG ERROR LOG]:\n{execution_result}\n")
 
                 if execution_result:
-                    # Feed result back BEFORE speaking, let AI comment naturally
-                    chat_history.append(
-                        {"role": "user", "content": f"SYSTEM OUTPUT: {execution_result}"}
-                    )
-                    messages_with_result = [system_prompt] + chat_history
-                    final_res = client.chat.completions.create(
-                        model=MODEL_NAME, messages=messages_with_result
-                    )
+                    chat_history.append({"role": "user", "content": f"SYSTEM OUTPUT: {execution_result}"})
+                    final_res = client.chat.completions.create(model=MODEL_NAME, messages=[system_prompt] + chat_history)
                     final_text = final_res.choices[0].message.content
                     speak(final_text)
                     chat_history.append({"role": "assistant", "content": final_text})
                 else:
-                    # No code ran, just speak the response
                     speak(ai_text)
+
             except Exception as e:
                 print(f"[!] ERROR: {e}")
 
