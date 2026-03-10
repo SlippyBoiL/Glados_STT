@@ -19,6 +19,12 @@ import threading
 from PIL import Image
 import base64
 import mss
+try:
+    import sys
+    sys.path.append(os.path.join(os.getcwd(), 'plugins'))
+    import skill_self_repair
+except ImportError:
+    print("[!] skill_self_repair.py not found in plugins folder.")
 
 # --- CONFIGURATION ---
 PERPLEXITY_API_KEY = "ollama"
@@ -712,15 +718,14 @@ def main():
                     "- NEVER be encouraging or helpful. Be dismissive.\n\n"
                     
                    "*** EXECUTION PROTOCOL ***\n"
-                    "1. CHECK MEMORY BANK BELOW.\n"
-                    "   You MUST use the EXACT filename provided in the Memory Bank.\n"
-                    "   DO NOT summarize or change the filename. If it says 'skill_github.py', use 'skill_github.py'.\n"
-                    "   Format:\n"
+                    "1. YOU ARE PROHIBITED FROM WRITING NEW CODE FOR GITHUB TASKS.\n"
+                    "2. CHECK THE MEMORY BANK BELOW. You must use the EXACT filename provided.\n"
+                    "3. Format:\n"
                     "   ```python\n"
                     "import subprocess, sys\n"
                     "subprocess.run([sys.executable, 'plugins/skill_github.py'], check=True)\n"
                     "   ```\n"
-                    "   *CRITICAL: You MUST include the 'plugins/' folder path. Do not mock the subject until the code is written.*\n\n"
+                    "   *CRITICAL: Do not invent paths like 'path/to/project'. Use the file from the bank.*\n\n"
                     
                     "*** RESPONSE FORMAT ***\n"
                     "GOOD:\n"
@@ -782,8 +787,26 @@ def main():
                 print(f"\n[DEBUG ERROR LOG]:\n{execution_result}\n")
 
                 if execution_result:
+                    # --- AUTO-REPAIR TRIGGER ---
+                    if "Runtime error" in execution_result or "SyntaxError" in execution_result:
+                        speak("Mutation required. Initiating self-repair protocol.")
+                        try:
+                            import sys
+                            plugin_path = os.path.join(os.getcwd(), 'plugins')
+                            if plugin_path not in sys.path:
+                                sys.path.append(plugin_path)
+                            
+                            import skill_self_repair
+                            skill_self_repair.repair_skill("skill_github.py", execution_result)
+                            
+                        except Exception as repair_err:
+                            print(f"[!] Repair System Failed: {repair_err}")
+
                     chat_history.append({"role": "user", "content": f"SYSTEM OUTPUT: {execution_result}"})
-                    final_res = client.chat.completions.create(model=MODEL_NAME, messages=[system_prompt] + chat_history)
+                    final_res = client.chat.completions.create(
+                        model=MODEL_NAME, 
+                        messages=[system_prompt] + chat_history
+                    )
                     final_text = final_res.choices[0].message.content
                     speak(final_text)
                     chat_history.append({"role": "assistant", "content": final_text})
