@@ -3,14 +3,11 @@
 
 import subprocess
 import sys
-import os
-
 
 def _generate_requirements_txt():
     """Safely generate requirements.txt using pip freeze."""
     print("Generating requirements.txt...")
     try:
-        # Use the running interpreter and capture output instead of relying on shell redirection.
         result = subprocess.run(
             [sys.executable, "-m", "pip", "freeze"],
             check=True,
@@ -22,8 +19,6 @@ def _generate_requirements_txt():
         print("requirements.txt created.")
     except subprocess.CalledProcessError as e:
         print(f"pip freeze failed: {e}")
-        # Not fatal for git push; continue anyway.
-
 
 def run_git_push():
     try:
@@ -37,8 +32,15 @@ def run_git_push():
 
         # Step 3: Git commit
         print("Running git commit -m 'Auto-Sync'")
-        subprocess.run(["git", "commit", "-m", "Auto-Sync"], check=True)
-        print("Committed changes.")
+        try:
+            subprocess.run(["git", "commit", "-m", "Auto-Sync"], check=True)
+            print("Committed changes.")
+        except subprocess.CalledProcessError as e:
+            # If exit code is 1, there was just nothing to commit.
+            if e.returncode == 1:
+                print("Working tree clean. Nothing new to commit. Proceeding to push...")
+            else:
+                raise e # If it's a real error, crash normally.
 
         # Step 4: Git push to main
         print("Running git push origin main")
