@@ -1,38 +1,19 @@
 import os
 import re
+import json
 from openai import OpenAI
 
 # --- SETUP ---
 client = OpenAI(api_key="ollama", base_url="http://localhost:11434/v1")
 MODEL_NAME = "llama3.2"
-PLUGINS_DIR = "Plugins"
-
-# --- CORE INTENTS (The foundation of the brain) ---
-BASE_LIGHTS = [
-    "turn on the bedroom lights", "make the tv red", "lights off", "dim the closet to 50%", 
-    "turn the strip blue", "illuminate the room", "shut off the lights", "brightness to 100", 
-    "set lights to warm", "pitch black", "give me some light", "it is too dark in here", 
-    "govee lights on", "change the bedroom to purple"
-]
-BASE_OPEN = [
-    "open google chrome", "start discord", "launch steam", "boot up vs code", "open calculator", 
-    "fire up the browser", "start my game client", "open up spotify", "launch edge", "run notepad"
-]
-BASE_CLOSE = [
-    "kill steam", "close notepad", "terminate discord", "shut down chrome", "quit edge", 
-    "destroy spotify", "force quit calculator", "stop the browser", "exit vs code", "close everything"
-]
-BASE_CHAT = [
-    "hello glados", "write a python script for me", "what is the meaning of life", 
-    "you are terrible", "save this skill", "how do i bake a cake", "what is the weather", 
-    "tell me a joke", "you are a useless machine", "run the diagnostic"
-]
+PLUGINS_DIR = "plugins"
+JSON_FILE = "brain_data.json"
 
 def extract_description(filepath):
-    """Reads the first few lines of a plugin to find its description."""
+    """Reads the top of a plugin to find its description."""
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read(500) # Only read the top chunk
+            content = f.read(500)
             match = re.search(r'# DESCRIPTION:\s*(.*)', content, re.IGNORECASE)
             if match:
                 return match.group(1).strip()
@@ -41,69 +22,74 @@ def extract_description(filepath):
     return None
 
 def generate_triggers(description):
-    """Forces Llama 3.2 to invent 3 voice commands for a given description."""
-    prompt = f"I have an AI tool with this description: '{description}'. Write exactly 3 short, natural voice commands a user would say to trigger it. Output ONLY the 3 commands separated by commas. No quotes, no bullet points, no markdown, no extra text."
-    
+    """Forces Llama 3.2 to invent voice commands."""
+    prompt = f"I have an AI tool with this description: '{description}'. Write exactly 3 short, natural voice commands a user would say to trigger it. Output ONLY the 3 commands separated by commas. No quotes, no markdown."
     try:
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3 # Low temperature to keep it strict and robotic
+            temperature=0.3
         )
         text = response.choices[0].message.content.strip()
-        # Clean up the AI's output into a clean list
-        commands = [cmd.strip().strip("'").strip('"') for cmd in text.split(',')]
-        return commands[:3] # Ensure we only grab 3
+        
+        # --- THE FIX ---
+        # Force all newlines and weird punctuation to become commas
+        text = text.replace('\n', ',').replace('.', '').replace('?', '')
+        
+        # Clean up the AI's output into a clean list, ignoring empty strings
+        commands = [cmd.strip().strip("'").strip('"') for cmd in text.split(',') if cmd.strip()]
+        return commands[:3] 
     except Exception as e:
-        print(f"[!] Llama failed to generate triggers: {e}")
-        return [f"run the {description[:10]} skill"]
+        print(f"[!] Llama failed to brainstorm: {e}")
+        return []
 
-def compile_brain():
-    print("[*] Sweeping Memory Bank for installed plugins...")
-    skill_triggers = []
+def update_brain_json():
+    print("[*] Initiating Autonomous Neural Compiler...")
     
-    if not os.path.exists(PLUGINS_DIR):
-        print(f"[!] Error: Could not find {PLUGINS_DIR} folder.")
+    # 1. Load the current brain data
+    if not os.path.exists(JSON_FILE):
+        print(f"[!] Critical Error: Cannot find {JSON_FILE}!")
         return
+        
+    with open(JSON_FILE, "r", encoding="utf-8") as f:
+        brain_data = json.load(f)
+        
+    existing_chat_skills = set(brain_data.get("CHAT_SKILLS", []))
+    new_skills_added = False
 
-    # 1. Read the plugins
+    # 2. Scan the plugins for undocumented skills
     for filename in os.listdir(PLUGINS_DIR):
-        if filename.endswith(".py"):
+        if filename.endswith(".py") and filename.startswith("skill_"):
             filepath = os.path.join(PLUGINS_DIR, filename)
             desc = extract_description(filepath)
+            
             if desc:
-                print(f"    -> Analyzing {filename}...")
-                triggers = generate_triggers(desc)
-                skill_triggers.extend(triggers)
+                # We use a hidden "marker" phrase to check if this file was already processed
+                marker = f"run {filename.replace('.py', '')}"
                 
-    print("\n[*] Compiling Neural Arrays...")
-    
-    # 2. Combine the base foundation with the newly imagined skill triggers
-    all_sentences = BASE_LIGHTS + BASE_OPEN + BASE_CLOSE + BASE_CHAT + skill_triggers
-    
-    # 3. Mathematically map out the labels to match the lengths perfectly
-    labels = []
-    labels.extend([0] * len(BASE_LIGHTS))
-    labels.extend([1] * len(BASE_OPEN))
-    labels.extend([2] * len(BASE_CLOSE))
-    labels.extend([3] * (len(BASE_CHAT) + len(skill_triggers)))
-    
-    # 4. Print the final code for the user
-    print("\n" + "="*80)
-    print("COPY AND PASTE EVERYTHING BELOW THIS LINE INTO omni_brain.py")
-    print("="*80 + "\n")
-    
-    print("training_sentences = [")
-    for i, sentence in enumerate(all_sentences):
-        # Formatting to add commas everywhere except the very last item
-        comma = "," if i < len(all_sentences) - 1 else ""
-        print(f'    "{sentence}"{comma}')
-    print("]\n")
-    
-    # Format the labels array cleanly
-    labels_str = ", ".join(map(str, labels))
-    print(f"training_labels = np.array([\n    {labels_str}\n])")
-    print("\n" + "="*80)
+                if marker not in existing_chat_skills:
+                    print(f"    -> Inventing neural pathways for: {filename}")
+                    triggers = generate_triggers(desc)
+                    
+                    # Add the invisible marker so we don't compile this file again tomorrow
+                    brain_data["CHAT_SKILLS"].append(marker)
+                    existing_chat_skills.add(marker)
+                    
+                    # Inject the newly imagined voice commands into the JSON
+                    for t in triggers:
+                        if t and t not in existing_chat_skills:
+                            brain_data["CHAT_SKILLS"].append(t)
+                            existing_chat_skills.add(t)
+                            
+                    new_skills_added = True
+
+    # 3. Save the expanded brain back to the JSON file
+    if new_skills_added:
+        with open(JSON_FILE, "w", encoding="utf-8") as f:
+            json.dump(brain_data, f, indent=4)
+        print("[+] Neural pathways updated successfully. JSON memory expanded.")
+    else:
+        print("[*] No new skills detected. Brain is up to date.")
 
 if __name__ == "__main__":
-    compile_brain()
+    update_brain_json()

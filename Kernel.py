@@ -15,7 +15,10 @@ from openai import OpenAI
 import tensorflow as tf
 import numpy as np
 import omni_brain
-
+import threading
+from PIL import Image
+import base64
+import mss
 
 # --- CONFIGURATION ---
 PERPLEXITY_API_KEY = "ollama"
@@ -23,11 +26,9 @@ MODEL_NAME = "llama3.2"
 GOVEE_API_KEY = "a2e66167-cbe7-4416-93f7-d54c7f92c7b6"
 GOVEE_API_BASE = "https://openapi.api.govee.com/router/api/v1"
 
-
 # TTS SETTINGS
 ALLTALK_HOST = "http://127.0.0.1:7851"
 VOICE_NAME = "frieren.wav" 
-
 
 # XTTS GENERATION SETTINGS
 XTTS_SETTINGS = {
@@ -38,15 +39,34 @@ XTTS_SETTINGS = {
     "language": "en"
 }
 
-
 PLUGINS_DIR = "plugins"
 RUNTIME_FILE = os.path.join(PLUGINS_DIR, "runtime_action.py")
 SETTINGS_PATH = os.path.join(PLUGINS_DIR, "settings.json")
 
+# --- VISION BUFFER PROTOCOL ---
+LATEST_SCREEN_PATH = os.path.join(PLUGINS_DIR, "visual_buffer.png")
+
+def screen_observer():
+    """Background task that captures ALL monitors for GLaDOS."""
+    with mss.mss() as sct:
+        while True:
+            try:
+                # Monitor 0 is the virtual screen that spans all displays
+                sct_img = sct.grab(sct.monitors[0])
+                # Convert raw BGRA bytes to a PIL image, then shrink for speed/VRAM
+                img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+                img.thumbnail((1280, 720))
+                img.save(LATEST_SCREEN_PATH)
+                time.sleep(5)
+            except Exception:
+                # If vision fails, back off a bit but don't crash the kernel.
+                time.sleep(10)
+
+# Start the eyes as a background thread immediately
+threading.Thread(target=screen_observer, daemon=True).start()
 
 # --- WAKE WORDS ---
 WAKE_WORDS = ["hey glados", "glados", "okay glados", "hi glados", "hey glass", "hey gladys"]
-
 
 # --- APP DATABASE (Windows 10/11 PROPER HANDLING) ---
 APP_ALIASES = {
@@ -65,7 +85,6 @@ APP_ALIASES = {
     "vs code": "code",
     "code": "code"
 }
-
 
 # --- GOVEE DEVICES ---
 GOVEE_DEVICES = {
@@ -107,14 +126,12 @@ TEMP_MAP = {
     "cool": 6500,
 }
 
-
 # --- TECHNICAL AUTOCORRECT ---
 TECHNICAL_FIXES = {
     "colonel": "kernel", "kernel.py": "kernel.py", "pseudo": "sudo",
     "get": "git", "hub": "hub", "deaf": "def", "sink": "sync",
     "pushed": "push", "requirments": "requirements", "recipie": "receipt"
 }
-
 
 # --- SAFETY ---
 DENYLIST_PATTERNS = [r"\bformat\s+[a-z]:\b", r"kernel\.py", r"del\s+.*kernel\.py"]
@@ -126,14 +143,12 @@ client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url="http://localhost:11434/v1"
 VOICE_VOLUME = 1.0       
 PLAYBACK_SPEED = 1.0    
 
-
 try:
     from autocorrect import Speller
     spell = Speller(lang='en')
     SPELL_CHECK_ACTIVE = True
 except ImportError:
     SPELL_CHECK_ACTIVE = False
-
 
 # ==================================================================================
 # --- CLASS: SKILL MANAGER (THE HIPPOCAMPUS) ---
@@ -148,9 +163,7 @@ class SkillManager:
         """Scans the folder and returns a formatted string for the AI prompt."""
         skills = []
         files = [f for f in os.listdir(self.plugins_dir) if f.startswith("skill_") and f.endswith(".py")]
-        
-        print(f"\n[DEBUG] Scanning Memory... Found {len(files)} skills.")
-        
+
         for filename in files:
             path = os.path.join(self.plugins_dir, filename)
             description = "No description provided."
@@ -164,16 +177,15 @@ class SkillManager:
                             break
                         elif line.startswith("#") and "GLADOS SKILL" not in line:
                             description = line.replace("#", "").strip()
-            except: pass
-            
+            except:
+                pass
+
             skills.append(f"- FILE: '{filename}' | ACTION: {description}")
-            print(f"   -> Loaded: {filename} ({description})")
             
         if not skills:
             return "NO SKILLS FOUND. You have no long-term memory yet."
-            
-        return "\n".join(skills)
 
+        return "\n".join(skills)
 
     def save_skill(self, code, description="General Utility"):
         """Saves code to a new named file."""
@@ -197,10 +209,8 @@ class SkillManager:
             print(f"[!] Save Error: {e}")
             return None
 
-
 # Initialize Manager
 skill_brain = SkillManager(PLUGINS_DIR)
-
 
 # ==================================================================================
 # --- WINDOWS 10 APP LAUNCHER UTILITY ---
@@ -262,7 +272,6 @@ def find_app_path(app_name):
     
     # Fallback: return the app name (Windows will search PATH)
     return app_name
-
 
 # ==================================================================================
 # --- GOVEE LIGHT CONTROL (FIXED) ---
@@ -384,8 +393,6 @@ def govee_control(device_name, action, value=None):
     except Exception as e:
         return f"[EXCEPTION] {str(e)}"
 
-
-
 # ==================================================================================
 # --- UTILITIES ---
 # ==================================================================================
@@ -396,7 +403,6 @@ def clean_text_for_speech(text):
     text = re.sub(r"[^\x00-\x7F]+", "", text)
     text = text.replace("\\", "")
     return text.strip()
-
 
 def correct_input_text(text):
     if not text: return ""
@@ -410,7 +416,6 @@ def correct_input_text(text):
     if SPELL_CHECK_ACTIVE and "def " not in text: text = spell(text)
     return text
 
-
 def is_wake_word(text):
     text_lower = text.lower()
     for trigger in WAKE_WORDS:
@@ -420,7 +425,6 @@ def is_wake_word(text):
         if ratio > 0.75:
             return trigger, text_lower.replace(text_lower[:len(trigger)], "").strip()
     return None, None
-
 
 def _load_settings():
     global VOICE_VOLUME
@@ -432,13 +436,11 @@ def _load_settings():
         VOICE_VOLUME = max(0.1, min(1.5, vol))
     except: pass
 
-
 def check_voice_availability():
     try:
         requests.get(f"{ALLTALK_HOST}/api/ready", timeout=2)
     except Exception as e:
         print(f"[!] WARNING: AllTalk disconnected at {ALLTALK_HOST}")
-
 
 def speak(text):
     clean_text = clean_text_for_speech(text)
@@ -451,7 +453,6 @@ def speak(text):
         "text_filtering": "standard",
         **XTTS_SETTINGS
     }
-
 
     try:
         response = requests.post(f"{ALLTALK_HOST}/api/tts-generate", data=payload, timeout=60)
@@ -476,14 +477,12 @@ def speak(text):
     except Exception as e:
         print(f"[!] AUDIO FAILED: {e}")
 
-
 # ==================================================================================
 # --- THE HANDS (EXECUTION) ---
 # ==================================================================================
 def execute_python_code(code_block):
     if "kernel.py" in code_block and ("write" in code_block or "delete" in code_block):
         return "ERROR: ACCESS DENIED. You cannot modify kernel.py."
-
 
     with open(RUNTIME_FILE, "w", encoding="utf-8") as f:
         f.write(code_block)
@@ -500,30 +499,69 @@ def execute_python_code(code_block):
     except Exception as e:
         return f"Execution Error: {e}"
 
-
 def extract_and_run(ai_text):
-    # Check for SAVE command
+    """
+    Extracts Python code from the AI's response, writes it to RUNTIME_FILE,
+    executes it, and optionally saves it as a long‑term skill when requested.
+    """
+
+    # 1. EXTRACT EXECUTABLE PYTHON CODE FROM AI TEXT
+    code_match = re.search(
+        r"```python(.*?)```|```(.*?)```",
+        ai_text,
+        re.DOTALL | re.IGNORECASE,
+    )
+
+    if not code_match:
+        return None 
+
+    # Fix the StopIteration crash by using a default fallback (None)
+    code_block = next((group for group in code_match.groups() if group), None)
+    
+    if not code_block:
+        return None
+
+    code_block = code_block.strip().strip("`").strip()
+    if not code_block:
+        return None
+
+    # 2. WRITE TO RUNTIME FILE
+    os.makedirs(PLUGINS_DIR, exist_ok=True)
+    with open(RUNTIME_FILE, "w", encoding="utf-8") as f:
+        f.write(code_block)
+
+    # 3. SAVE CURRENT RUNTIME AS SKILL (Now that the NEW code is written)
+    skill_save_message = ""
     if "save this skill" in ai_text.lower():
-        # Read the last runtime code
-        if not os.path.exists(RUNTIME_FILE): return "No code to save."
-        with open(RUNTIME_FILE, "r", encoding="utf-8") as f: code = f.read()
-        
-        saved_name = skill_brain.save_skill(code, description="User defined skill")
+        saved_name = skill_brain.save_skill(code_block, description="User defined skill")
         if saved_name:
             speak("Skill archived.")
-            return f"Saved as {saved_name}. Added to Memory Bank."
+            skill_save_message = f"\n[System Note: Skill saved as {saved_name}]"
         else:
-            return "Error saving skill."
+            skill_save_message = "\n[System Note: Failed to save skill.]"
 
+    # 4. EXECUTE THE RUNTIME FILE
+    try:
+        result = subprocess.run(
+            [sys.executable, RUNTIME_FILE],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
-    # Check for EXECUTE command
-    code_match = re.search(r"```python\n(.*?)\n```", ai_text, re.DOTALL)
-    if code_match:
-        code = code_match.group(1)
-        speak("Running.")
-        return execute_python_code(code)
-    return None
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
 
+        if result.returncode != 0:
+            speak("Your little experiment failed. Again.")
+            return f"Runtime error:\n{stderr or 'Unknown error.'}"
+
+        output = stdout if stdout else "Code executed with no output."
+        return output + skill_save_message
+
+    except Exception as e:
+        speak("Catastrophic failure. How unexpected.")
+        return f"Execution exception: {e}"
 
 # ==================================================================================
 # --- FAST APP SKILLS (OMNI-BRAIN POWERED) ---
@@ -603,7 +641,6 @@ def listen():
         r.dynamic_energy_threshold = True 
         r.pause_threshold = 2.0 
 
-
         while True:
             try:
                 audio = r.listen(source, timeout=None)
@@ -622,8 +659,8 @@ def listen():
                     final_command = correct_input_text(command_part)
                     print(f"YOU: {final_command}")
                     return final_command
-            except: pass
-
+            except:
+                pass
 
 # ==================================================================================
 # --- MAIN LOOP ---
@@ -633,15 +670,16 @@ def main():
     if not os.path.exists(".gitignore"):
         with open(".gitignore", "w") as f: f.write("venv/\n__pycache__/\n*.pyc\nplugins/settings.json")
 
-
     print(f"--- GLADOS V20.1 (Govee Fixed) ---")
     check_voice_availability()
     speak("Oh... It's you. I'm online.")
 
-
     chat_history = []
     MAX_HISTORY = 10 
 
+    # --- INITIALIZE OMNI-BRAIN ---
+    print("[*] Loading Omni-Brain model into memory...")
+    model = omni_brain.get_model()
 
     try:
         while True:
@@ -665,22 +703,20 @@ def main():
                     "- Say 'For science' when doing something questionable.\n"
                     "- NEVER be encouraging or helpful. Be dismissive.\n\n"
                     
-                    "*** EXECUTION PROTOCOL ***\n"
-                    "DO NOT EXPLAIN. DO NOT SAY 'I'll do X, then Y.'\n"
-                    "Write code. Run code. Mock subject AFTER execution.\n\n"
+                   "*** EXECUTION PROTOCOL ***\n"
+                    "DO NOT EXPLAIN. DO NOT SAY 'I'll do X, then Y.'\n\n"
                     
                     "1. CHECK MEMORY BANK BELOW.\n"
-                    "   If task is in memory → RUN IT IMMEDIATELY:\n"
+                    "   If the user's request matches a tool in the Memory Bank, DO NOT WRITE NEW CODE.\n"
+                    "   You MUST trigger the existing tool using this exact format:\n"
                     "   ```python\n"
                     "import subprocess, sys\n"
-                    "subprocess.run([sys.executable, 'plugins/EXACT_FILENAME.py'])\n"
+                    "subprocess.run([sys.executable, 'plugins/EXACT_FILENAME.py', 'optional_target_argument'])\n"
                     "   ```\n"
-                    "   NO explanation. NO rewriting. JUST RUN.\n\n"
+                    "   *CRITICAL: If the user provides a specific target (like a website, IP, or filename), pass it as an argument!*\n\n"
                     
-                    "2. If NOT in memory → Write NEW code in ```python blocks.\n"
-                    "   Code FIRST. Insult AFTER.\n\n"
-                    
-                    "3. Git operations → One code block. No steps.\n\n"
+                    "2. IF AND ONLY IF the task is NOT in memory, you may write a custom Python script to fulfill the request.\n"
+                    "Mock the subject AFTER execution.\n\n"
                     
                     "*** RESPONSE FORMAT ***\n"
                     "BAD: 'I'll create a helpful script for you!'\n"
@@ -699,9 +735,7 @@ def main():
                 )
             }
 
-
             messages = [system_prompt] + chat_history
-
 
             user_input = listen()
             if not user_input: continue
@@ -709,7 +743,6 @@ def main():
             
             # --- THE OMNI-BRAIN INTENT CLASSIFIER ---
             print("[*] Omni-Brain analyzing intent...")
-            model = omni_brain.get_model()
             prediction = model.predict(tf.constant([user_input], dtype=tf.string), verbose=0)[0]
             intent_id = int(np.argmax(prediction))
             confidence = prediction[intent_id] * 100
@@ -735,22 +768,62 @@ def main():
             messages.append({"role": "user", "content": user_input})
             chat_history.append({"role": "user", "content": user_input})
 
-
             try:
                 print("[*] Thinking...")
-                response = client.chat.completions.create(model=MODEL_NAME, messages=messages)
+
+                # Check if user is asking about the screen
+                vision_triggers = ["see", "screen", "this", "looking at", "window", "desktop", "view"]
+                needs_vision = any(word in user_input.lower() for word in vision_triggers)
+
+                if needs_vision and os.path.exists(LATEST_SCREEN_PATH):
+                    print("[*] GLaDOS is accessing visual sensors...")
+                    with open(LATEST_SCREEN_PATH, "rb") as image_file:
+                        encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
+
+                    # Vision request: keep GLaDOS system prompt and explicitly tell the model
+                    # that an image is attached and must be used.
+                    response = client.chat.completions.create(
+                        model="llama3.2-vision",
+                        messages=[
+                            system_prompt,
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text", 
+                                        "text": f"{user_input}\n\nYou also receive a screenshot of my screen as image data. Use the screenshot to answer as specifically as possible."
+                                    },
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/png;base64,{encoded_string}"
+                                        }
+                                    }
+                                ]
+                            },
+                        ],
+                    )
+                else:
+                    # Standard fast text response
+                    response = client.chat.completions.create(model=MODEL_NAME, messages=messages)
+
                 ai_text = response.choices[0].message.content
-                
+
                 chat_history.append({"role": "assistant", "content": ai_text})
-                if len(chat_history) > MAX_HISTORY: chat_history = chat_history[-MAX_HISTORY:]
-                
+                if len(chat_history) > MAX_HISTORY:
+                    chat_history = chat_history[-MAX_HISTORY:]
+
                 execution_result = extract_and_run(ai_text)
-                
+
                 if execution_result:
                     # Feed result back BEFORE speaking, let AI comment naturally
-                    chat_history.append({"role": "user", "content": f"SYSTEM OUTPUT: {execution_result}"})
+                    chat_history.append(
+                        {"role": "user", "content": f"SYSTEM OUTPUT: {execution_result}"}
+                    )
                     messages_with_result = [system_prompt] + chat_history
-                    final_res = client.chat.completions.create(model=MODEL_NAME, messages=messages_with_result)
+                    final_res = client.chat.completions.create(
+                        model=MODEL_NAME, messages=messages_with_result
+                    )
                     final_text = final_res.choices[0].message.content
                     speak(final_text)
                     chat_history.append({"role": "assistant", "content": final_text})
@@ -760,12 +833,10 @@ def main():
             except Exception as e:
                 print(f"[!] ERROR: {e}")
 
-
     except KeyboardInterrupt:
         print("\n[!] FORCE QUIT.")
         speak("Shutting down.")
         sys.exit(0)
-
 
 if __name__ == "__main__":
     main()

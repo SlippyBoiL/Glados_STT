@@ -1,39 +1,22 @@
-# DESCRIPTION: a simple Python script for hashing passwords.
+# DESCRIPTION: Hash a password with SHA-256 (or generate a random one and hash it).
 # --- GLADOS SKILL: skill_hashing.py ---
 
-#!/usr/bin/env python3
-
-import getpass
 import hashlib
-import os
-import time
-import uuid
+import random
+import string
+
 
 def generate_password(length=16):
-    """Generates a random password"""
-    alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789'
-    return ''.join(uuid choice(alphabet) for uuid in range(length))
+    chars = string.ascii_letters + string.digits
+    return "".join(random.choice(chars) for _ in range(length))
+
 
 def main():
-    password = input("Enter a password or press Enter to generate a random one: ")
-    if not password:
-        password = generate_password()
+    password = generate_password(12)
+    hashed = hashlib.sha256(password.encode()).hexdigest()
+    print(f"Generated password (do not use in production): {password}")
+    print(f"SHA-256 hash: {hashed}")
 
-    # Hash the password
-    hashed_password = hashlib.sha256(password.encode()).hexdigest()
-    print("Hashed Password:", hashed_password)
-
-    # Create a file with the hashed password
-    filename = f"password_{getpass.getuser()}_{getpass.getuid()}_{time.time()}.txt"
-    with open(filename, 'w') as f:
-        f.write(hashed_password)
-
-    print("Password saved to:")
-    print(filename)
-
-    # Display the password
-    print("Your password is:")
-    print(password)
 
 if __name__ == "__main__":
     main()
