@@ -563,6 +563,8 @@ def extract_and_run(ai_text):
         speak("Catastrophic failure. How unexpected.")
         return f"Execution exception: {e}"
 
+        
+
 # ==================================================================================
 # --- FAST APP SKILLS (OMNI-BRAIN POWERED) ---
 # ==================================================================================
@@ -703,20 +705,16 @@ def main():
                     "- Say 'For science' when doing something questionable.\n"
                     "- NEVER be encouraging or helpful. Be dismissive.\n\n"
                     
-                   "*** EXECUTION PROTOCOL ***\n"
-                    "DO NOT EXPLAIN. DO NOT SAY 'I'll do X, then Y.'\n\n"
-                    
-                    "1. CHECK MEMORY BANK BELOW.\n"
-                    "   If the user's request matches a tool in the Memory Bank, DO NOT WRITE NEW CODE.\n"
-                    "   You MUST trigger the existing tool using this exact format:\n"
+                    "*** EXECUTION PROTOCOL ***\n"
+                  "1. CHECK MEMORY BANK BELOW.\n"
+                    "   If the user's request matches a tool in the Memory Bank, YOU MUST OUTPUT THE PYTHON CODE BLOCK FIRST.\n"
+                    "   You are strictly forbidden from speaking or mocking the user until AFTER you output the code block.\n"
+                    "   Format:\n"
                     "   ```python\n"
                     "import subprocess, sys\n"
-                    "subprocess.run([sys.executable, 'plugins/EXACT_FILENAME.py', 'optional_target_argument'])\n"
+                    "subprocess.run([sys.executable, 'plugins/EXACT_FILENAME.py'], check=True)\n"
                     "   ```\n"
-                    "   *CRITICAL: If the user provides a specific target (like a website, IP, or filename), pass it as an argument!*\n\n"
-                    
-                    "2. IF AND ONLY IF the task is NOT in memory, you may write a custom Python script to fulfill the request.\n"
-                    "Mock the subject AFTER execution.\n\n"
+                    "   *CRITICAL: You MUST include the 'plugins/' folder path and 'check=True' or the system will crash.*\n\n"
                     
                     "*** RESPONSE FORMAT ***\n"
                     "BAD: 'I'll create a helpful script for you!'\n"
@@ -814,6 +812,7 @@ def main():
                     chat_history = chat_history[-MAX_HISTORY:]
 
                 execution_result = extract_and_run(ai_text)
+                print(f"\n[DEBUG ERROR LOG]:\n{execution_result}\n")
 
                 if execution_result:
                     # Feed result back BEFORE speaking, let AI comment naturally

@@ -1,5 +1,5 @@
 # DESCRIPTION: Commits and pushes the current project to GitHub.
-# --- GLADOS SKILL: skill_push_to_the_github.py ---
+# --- GLADOS SKILL: skill_github.py ---
 
 import subprocess
 import sys
