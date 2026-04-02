@@ -4,7 +4,7 @@ import json
 from openai import OpenAI
 
 # --- SETUP ---
-client = OpenAI(api_key="ollama", base_url="http://localhost:11434/v1")
+client = OpenAI(api_key="ollama", base_url="http://192.168.1.144:11434")
 MODEL_NAME = "llama3.2"
 PLUGINS_DIR = "plugins"
 JSON_FILE = "brain_data.json"

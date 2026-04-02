@@ -19,6 +19,8 @@ import threading
 from PIL import Image
 import base64
 import mss
+import webbrowser
+import pygame
 try:
     import sys
     sys.path.append(os.path.join(os.getcwd(), 'plugins'))
@@ -28,12 +30,13 @@ except ImportError:
 
 # --- CONFIGURATION ---
 PERPLEXITY_API_KEY = "ollama"
-MODEL_NAME = "llama3.2"
+MODEL_NAME = "tinyllama"
 GOVEE_API_KEY = "a2e66167-cbe7-4416-93f7-d54c7f92c7b6"
 GOVEE_API_BASE = "https://openapi.api.govee.com/router/api/v1"
 
 # TTS SETTINGS
-ALLTALK_HOST = "http://127.0.0.1:7851"
+# --- Verify line 43 ---
+ALLTALK_HOST = "http://192.168.1.144:7851/api/tts-generate"
 VOICE_NAME = "frieren.wav" 
 
 # XTTS GENERATION SETTINGS
@@ -143,7 +146,8 @@ TECHNICAL_FIXES = {
 DENYLIST_PATTERNS = [r"\bformat\s+[a-z]:\b", r"kernel\.py", r"del\s+.*kernel\.py"]
 
 # Reroute to your local machine's port 11434
-client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url="http://localhost:11434/v1")
+# --- Change line 123 ---
+client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url="http://192.168.1.144:11434/v1")
 
 # --- AUDIO SETTINGS ---
 VOICE_VOLUME = 1.0       
@@ -576,17 +580,24 @@ def extract_and_run(ai_text):
 # ==================================================================================
 def handle_app_open(text):
     text = text.lower()
-    # Strip out all known action verbs so only the app name is left
     app_name = re.sub(r"\b(open|start|launch|fire up|boot up|run|up)\b", "", text).strip()
     
+    # --- NEW: WEB REROUTE ---
+    web_sites = {
+        "youtube": "https://www.youtube.com",
+        "google": "https://www.google.com",
+        "github": "https://www.github.com",
+        "canvas": "https://canvas.instructure.com" # Useful for your degree!
+    }
+
+    if app_name in web_sites:
+        speak(f"Opening {app_name} in your browser. Try not to get distracted by cat videos.")
+        webbrowser.open(web_sites[app_name])
+        return True
+    # ------------------------
+
     app_key = APP_ALIASES.get(app_name, app_name)
     exe_path = find_app_path(app_key)
-    try:
-        subprocess.Popen(exe_path, shell=False)
-        speak(f"Starting {app_name}.")
-        return True
-    except:
-        return False
 
 def handle_app_close(text):
     text = text.lower()
