@@ -1,7 +1,8 @@
-import pygame
-import time
 import subprocess
 import os
+import numpy as np
+import sounddevice as sd
+import soundfile as sf
 from flask import Flask, request, jsonify
 from openai import OpenAI
 
@@ -12,6 +13,22 @@ app = Flask(__name__)
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://192.168.1.144:11434/v1")
 MODEL_NAME = os.environ.get("MODEL_NAME", "llama3.2")
 client = OpenAI(api_key="ollama", base_url=OLLAMA_BASE_URL)
+# Elgato Wave Link: route playback to a virtual output (e.g. "Wave Link System") by substring match.
+AUDIO_OUTPUT_MATCH = os.environ.get("AUDIO_OUTPUT_MATCH", "Wave Link")
+
+
+def _find_sounddevice_output_index(name_substring):
+    if not (name_substring and str(name_substring).strip()):
+        return None
+    needle = str(name_substring).lower().strip()
+    try:
+        for i, d in enumerate(sd.query_devices()):
+            if d["max_output_channels"] > 0 and needle in d["name"].lower():
+                return i
+    except Exception:
+        pass
+    return None
+
 
 def play_glados_audio(text_to_speak):
     print("\n[AUDIO] Firing up Piper TTS locally...")
@@ -34,12 +51,14 @@ def play_glados_audio(text_to_speak):
         process.communicate(input=clean_text)
         
         if process.returncode == 0:
-            pygame.mixer.init()
-            pygame.mixer.music.load(output_audio_file)
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():
-                time.sleep(0.1)
-            pygame.mixer.quit()
+            data, samplerate = sf.read(output_audio_file)
+            scaled = np.clip(np.asarray(data, dtype=np.float64), -1.0, 1.0)
+            out_dev = _find_sounddevice_output_index(AUDIO_OUTPUT_MATCH)
+            if out_dev is not None:
+                sd.play(scaled, samplerate, device=out_dev)
+            else:
+                sd.play(scaled, samplerate)
+            sd.wait()
     except Exception as e:
         print(f"[AUDIO ERROR] {e}")
 

@@ -8,7 +8,6 @@ import requests
 import speech_recognition as sr
 import sounddevice as sd
 import soundfile as sf
-import io
 import winreg
 from difflib import SequenceMatcher
 from openai import OpenAI
@@ -20,7 +19,6 @@ from PIL import Image
 import base64
 import mss
 import webbrowser
-import pygame
 try:
     import sys
     sys.path.append(os.path.join(os.getcwd(), 'plugins'))
@@ -38,6 +36,11 @@ GOVEE_API_BASE = "https://openapi.api.govee.com/router/api/v1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PIPER_MODEL_PATH = os.environ.get("PIPER_MODEL_PATH", os.path.join(BASE_DIR, "glados.onnx"))
 PIPER_OUTPUT_WAV = os.environ.get("PIPER_OUTPUT_WAV", os.path.join(BASE_DIR, "local_glados_response.wav"))
+
+# Elgato Wave Link 3: pick virtual I/O by substring (see Wave Link app for exact names).
+# Set a longer string if multiple devices match, e.g. "Wave Link System" for the System mix input.
+AUDIO_OUTPUT_MATCH = os.environ.get("AUDIO_OUTPUT_MATCH", "Wave Link")
+AUDIO_INPUT_MATCH = os.environ.get("AUDIO_INPUT_MATCH", "Wave Link")
 
 PLUGINS_DIR = "plugins"
 RUNTIME_FILE = os.path.join(PLUGINS_DIR, "runtime_action.py")
@@ -428,14 +431,66 @@ def is_wake_word(text):
     return None, None
 
 def _load_settings():
-    global VOICE_VOLUME
+    global VOICE_VOLUME, AUDIO_OUTPUT_MATCH, AUDIO_INPUT_MATCH
     if not os.path.exists(SETTINGS_PATH): return
     try:
         with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
         vol = float(data.get("voice_volume", VOICE_VOLUME))
         VOICE_VOLUME = max(0.1, min(1.5, vol))
+        if data.get("audio_output_match"):
+            AUDIO_OUTPUT_MATCH = str(data["audio_output_match"])
+        if data.get("audio_input_match"):
+            AUDIO_INPUT_MATCH = str(data["audio_input_match"])
     except: pass
+
+
+def _find_sounddevice_output_index(name_substring):
+    """PortAudio output device index, or None to use default."""
+    if not (name_substring and str(name_substring).strip()):
+        return None
+    needle = str(name_substring).lower().strip()
+    try:
+        for i, d in enumerate(sd.query_devices()):
+            if d["max_output_channels"] > 0 and needle in d["name"].lower():
+                return i
+    except Exception:
+        pass
+    return None
+
+
+def _find_speechrecognition_mic_index(name_substring):
+    """PyAudio mic index for speech_recognition, or None for default."""
+    if not (name_substring and str(name_substring).strip()):
+        return None
+    needle = str(name_substring).lower().strip()
+    try:
+        for i, name in enumerate(sr.Microphone.list_microphone_names()):
+            if needle in name.lower():
+                return i
+    except Exception:
+        pass
+    return None
+
+
+def _log_audio_routing():
+    out_i = _find_sounddevice_output_index(AUDIO_OUTPUT_MATCH)
+    if out_i is not None:
+        try:
+            print(f"[*] TTS → [{out_i}] {sd.query_devices(out_i)['name']}")
+        except Exception:
+            print(f"[*] TTS → device index {out_i}")
+    else:
+        print(f"[*] TTS → default output (no match for '{AUDIO_OUTPUT_MATCH}')")
+    mic_i = _find_speechrecognition_mic_index(AUDIO_INPUT_MATCH)
+    if mic_i is not None:
+        try:
+            names = sr.Microphone.list_microphone_names()
+            print(f"[*] Mic ← [{mic_i}] {names[mic_i]}")
+        except Exception:
+            print(f"[*] Mic ← device index {mic_i}")
+    else:
+        print(f"[*] Mic ← default (no match for '{AUDIO_INPUT_MATCH}')")
 
 def check_voice_availability():
     if not os.path.exists(PIPER_MODEL_PATH):
@@ -466,13 +521,17 @@ def speak(text):
         if process.returncode != 0:
             raise RuntimeError(stderr.strip() or f"piper exited with code {process.returncode}")
 
-        pygame.mixer.init()
-        pygame.mixer.music.load(PIPER_OUTPUT_WAV)
-        pygame.mixer.music.set_volume(max(0.0, min(1.0, VOICE_VOLUME)))
-        pygame.mixer.music.play()
-        while pygame.mixer.music.get_busy():
-            time.sleep(0.05)
-        pygame.mixer.quit()
+        data, samplerate = sf.read(PIPER_OUTPUT_WAV)
+        vol = max(0.0, min(1.5, float(VOICE_VOLUME)))
+        scaled = np.asarray(data, dtype=np.float64) * vol
+        np.clip(scaled, -1.0, 1.0, out=scaled)
+
+        out_dev = _find_sounddevice_output_index(AUDIO_OUTPUT_MATCH)
+        if out_dev is not None:
+            sd.play(scaled, samplerate, device=out_dev)
+        else:
+            sd.play(scaled, samplerate)
+        sd.wait()
         time.sleep(0.15)
 
     except Exception as e:
@@ -645,7 +704,11 @@ def handle_light_command(text):
 # ==================================================================================
 def listen():
     r = sr.Recognizer()
-    with sr.Microphone() as source:
+    mic_idx = _find_speechrecognition_mic_index(AUDIO_INPUT_MATCH)
+    mic_kw = {}
+    if mic_idx is not None:
+        mic_kw["device_index"] = mic_idx
+    with sr.Microphone(**mic_kw) as source:
         print("\nWaiting for 'Hey Glados'...")
         r.adjust_for_ambient_noise(source, duration=2.0)
         r.dynamic_energy_threshold = True 
@@ -682,6 +745,7 @@ def main():
 
     print(f"--- GLADOS V20.1 (Govee Fixed) ---")
     check_voice_availability()
+    _log_audio_routing()
     speak("Oh... It's you. I'm online.")
 
     chat_history = []
