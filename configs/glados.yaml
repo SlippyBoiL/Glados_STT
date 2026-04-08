@@ -1,0 +1,36 @@
+# Glados — local-first defaults (pattern: OpenJarvis-style single config + env overrides).
+# Docs: https://github.com/open-jarvis/OpenJarvis  |  Env vars still win if set.
+#
+# model_name / vision_model must match `ollama list` exactly (case-sensitive). Example:
+#   ollama pull llama3.2-vision
+
+# Same machine as Glados (GPU usage shows on this PC in Task Manager / nvidia-smi)
+ollama_base_url: "http://127.0.0.1:11434/v1"
+# Llama 3.2 Vision — use for normal chat and for screen/vision turns
+model_name: "llama3.2-vision"
+vision_model: "llama3.2-vision"
+
+# Piper TTS (paths relative to repo root ok)
+piper_model_path: "glados.onnx"
+piper_output_wav: "local_glados_response.wav"
+
+# Elgato Wave Link: substring match for device names
+audio_output_match: "Wave Link"
+audio_input_match: "Wave Link"
+
+plugins_dir: "plugins"
+
+# Input mode:
+# - voice: wake word + microphone (default)
+# - text: type into the terminal
+# - hybrid: type, or press Enter to use voice
+input_mode: "hybrid"
+
+# --- Speed (Ollama uses GPU on the machine running ollama serve — this config targets localhost)
+llm_max_tokens: 512
+chat_history_max_messages: 24
+screen_capture_max_edge: 960
+vision_jpeg_max_edge: 896
+vision_jpeg_quality: 78
+# Optional: keeps model loaded between requests (newer Ollama + OpenAI API). Uncomment if supported:
+# ollama_keep_alive: "15m"

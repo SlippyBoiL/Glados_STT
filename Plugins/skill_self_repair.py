@@ -8,9 +8,14 @@ import subprocess
 import sys
 from openai import OpenAI
 
-# --- CONFIGURATION ---
-client = OpenAI(api_key="ollama", base_url="http://localhost:11434/v1")
-MODEL_NAME = "llama3.2"
+_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
+from glados_config import load_config
+
+_cfg = load_config()
+client = OpenAI(api_key="ollama", base_url=_cfg["ollama_base_url"])
+MODEL_NAME = _cfg["model_name"]
 PLUGINS_DIR = "plugins"
 
 def repair_skill(target_filename, error_log):

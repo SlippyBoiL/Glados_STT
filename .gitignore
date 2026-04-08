@@ -2,3 +2,13 @@ venv/
 __pycache__/
 *.pyc
 plugins/settings.json
+
+# Large / generated — keeps `git push` fast (was staging wav + onnx + screen buffer)
+*.wav
+*.onnx
+plugins/visual_buffer.png
+*.log
+tensorboard_logs/
+.pytest_cache/
+.mypy_cache/
+.cursor/

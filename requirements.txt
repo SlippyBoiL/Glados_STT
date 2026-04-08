@@ -56,6 +56,7 @@ pillow==12.1.1
 propcache==0.4.1
 proto-plus==1.27.0
 protobuf==7.34.0
+paramiko==4.0.0
 pyasn1==0.6.2
 pyasn1_modules==0.4.2
 PyAudio==0.2.14
@@ -88,6 +89,7 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 uritemplate==4.2.0
 urllib3==2.6.3
+watchdog==6.0.0
 Werkzeug==3.1.6
 wrapt==2.1.2
 yarl==1.22.0

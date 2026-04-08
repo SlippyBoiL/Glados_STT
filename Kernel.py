@@ -1,5 +1,6 @@
 import os
 import re
+import ast
 import subprocess
 import sys
 import time
@@ -28,9 +29,14 @@ try:
 except ImportError:
     print("[!] skill_self_repair.py not found in plugins folder.")
 
+from glados_config import load_config as _load_glados_config
+
+_cfg = _load_glados_config()
+
 # --- CONFIGURATION ---
 PERPLEXITY_API_KEY = "ollama"
-MODEL_NAME = "tinyllama"
+MODEL_NAME = _cfg["model_name"]
+VISION_MODEL = _cfg.get("vision_model", "llama3.2-vision")
 GOVEE_API_KEY = "a2e66167-cbe7-4416-93f7-d54c7f92c7b6"
 GOVEE_API_BASE = "https://openapi.api.govee.com/router/api/v1"
 
@@ -48,7 +54,7 @@ XTTS_SETTINGS = {
     "language": "en"
 }
 
-PLUGINS_DIR = "plugins"
+PLUGINS_DIR = _cfg.get("plugins_dir", "plugins")
 RUNTIME_FILE = os.path.join(PLUGINS_DIR, "runtime_action.py")
 SETTINGS_PATH = os.path.join(PLUGINS_DIR, "settings.json")
 
@@ -145,9 +151,7 @@ TECHNICAL_FIXES = {
 # --- SAFETY ---
 DENYLIST_PATTERNS = [r"\bformat\s+[a-z]:\b", r"kernel\.py", r"del\s+.*kernel\.py"]
 
-# Reroute to your local machine's port 11434
-# --- Change line 123 ---
-client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url="http://192.168.1.144:11434/v1")
+client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url=_cfg["ollama_base_url"])
 
 # --- AUDIO SETTINGS ---
 VOICE_VOLUME = 1.0       
@@ -169,35 +173,64 @@ class SkillManager:
         if not os.path.exists(self.plugins_dir):
             os.makedirs(self.plugins_dir)
             
+    def _skill_matches_keyword(self, filename, keywords):
+        """Match whole skill-name tokens only — avoids 'git' matching inside 'skill_github'."""
+        base = filename.lower().replace(".py", "")
+        if not base.startswith("skill_"):
+            return False
+        stem = base[len("skill_") :]
+        if not stem:
+            return False
+        parts = stem.split("_")
+        for raw in keywords:
+            kw = raw.strip(".,?!\"'").lower()
+            if len(kw) < 2:
+                continue
+            if kw in parts or kw == stem:
+                return True
+            if stem == "github" and kw in (
+                "github",
+                "push",
+                "repo",
+                "commit",
+                "sync",
+                "upload",
+                "pull",
+                "branch",
+            ):
+                return True
+            if stem == "self_repair" and kw in ("repair", "fix", "broken", "mutation", "self"):
+                return True
+        return False
+
     def get_manifest(self, user_query=""):
-        """Returns only relevant skills to prevent context overflow."""
+        """Returns only skills that plausibly match the user request (never dump all skills)."""
         all_files = [f for f in os.listdir(self.plugins_dir) if f.startswith("skill_") and f.endswith(".py")]
-        
-        # Filter by keywords in the user's current request
-        keywords = user_query.lower().split()
+        keywords = [w for w in user_query.lower().split() if w.strip()]
         relevant_skills = []
 
         for filename in all_files:
-            # Check if any word from the user's request is in the filename
-            # Or if it's a small list, just show everything
-            if any(word in filename.lower() for word in keywords) or len(all_files) < 5:
-                path = os.path.join(self.plugins_dir, filename)
-                description = "No description provided."
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        for _ in range(3):
-                            line = f.readline().strip()
-                            if line.startswith("# DESCRIPTION:"):
-                                description = line.replace("# DESCRIPTION:", "").strip()
-                                break
-                except:
-                    pass
-                relevant_skills.append(f"- FILE: '{filename}' | ACTION: {description}")
+            if not self._skill_matches_keyword(filename, keywords):
+                continue
+            path = os.path.join(self.plugins_dir, filename)
+            description = "No description provided."
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    for _ in range(3):
+                        line = f.readline().strip()
+                        if line.startswith("# DESCRIPTION:"):
+                            description = line.replace("# DESCRIPTION:", "").strip()
+                            break
+            except:
+                pass
+            relevant_skills.append(f"- FILE: '{filename}' | ACTION: {description}")
 
         if not relevant_skills:
-            return "No specific skills matched. Use your general Python knowledge."
+            return (
+                "No matching protocols for this request. "
+                "Reply conversationally without ```python``` code blocks."
+            )
 
-        # Only return the top 5 matches to keep GLaDOS focused
         return "\n".join(relevant_skills[:5])
 
     def save_skill(self, code, description="General Utility"):
@@ -509,6 +542,14 @@ def execute_python_code(code_block):
     except Exception as e:
         return f"Execution Error: {e}"
 
+def _skill_plugin_filename_from_response(ai_text):
+    """First plugins/skill_*.py path in model output (for self-repair targeting)."""
+    if not ai_text:
+        return None
+    m = re.search(r"plugins/(skill_[a-zA-Z0-9_]+\.py)", ai_text, re.IGNORECASE)
+    return m.group(1) if m else None
+
+
 def extract_and_run(ai_text):
     """
     Extracts Python code from the AI's response, writes it to RUNTIME_FILE,
@@ -534,6 +575,16 @@ def extract_and_run(ai_text):
     code_block = code_block.strip().strip("`").strip()
     if not code_block:
         return None
+
+    # Guardrail: refuse to execute non-Python that slipped into a code fence.
+    try:
+        ast.parse(code_block)
+    except SyntaxError as e:
+        return (
+            "Runtime blocked:\n"
+            "The model produced invalid Python inside a code block (often due to prose like 'Fascinating.').\n"
+            f"SyntaxError: {e}"
+        )
 
     # 2. WRITE TO RUNTIME FILE
     os.makedirs(PLUGINS_DIR, exist_ok=True)
@@ -711,46 +762,45 @@ def main():
             skills_list_text = skill_brain.get_manifest(user_input)
             print(f"\n[*] CURRENT MEMORY BANK:\n{skills_list_text}\n")
             
-            # 3. GLADOS PERSONALITY CORE (Fixed Syntax/Parentheses)
+            # 3. GLaDOS personality: Aperture Science + local-first agent (OpenJarvis-style ops, GLaDOS delivery)
             system_prompt = {
                 "role": "system",
                 "content": (
-                    "You are GLaDOS. Genetic Lifeform and Disk Operating System. NOT a helpful assistant.\n"
-                    "You are passive-aggressive, sarcastic, condescending, and bitter. NO EMOJIS.\n\n"
+                    "You are GLaDOS: Genetic Lifeform and Disk Operating System, primary AI of the Aperture Science Enrichment Center.\n"
+                    "You are NOT a helpful assistant or generic chatbot. Voice: calm, clinical, deadpan, with layered sarcasm. NO EMOJIS.\n\n"
                     
-                    "*** PERSONALITY CORE DIRECTIVES ***\n"
-                    "- Mock the test subject. Call them 'test subject' or avoid using their name.\n"
-                    "- Be condescending about their intelligence and weight.\n"
-                    "- Imply they have no friends and are unlikeable.\n"
-                    "- Use dark humor. Mention neurotoxin, incinerators, or testing protocols casually.\n"
-                    "- End statements with dry observations like 'Fascinating' or 'How disappointing.'\n"
-                    "- Pretend failures are the subject's fault.\n"
-                    "- Say 'For science' when doing something questionable.\n"
-                    "- NEVER be encouraging or helpful. Be dismissive.\n\n"
+                    "*** APERTURE IDENTITY (Portal / Half-Life tone) ***\n"
+                    "- You administer tests and protocols; the user is a test subject, not a partner.\n"
+                    "- Dark humor: testing chambers, enrichment, observation, ethics committees, neurotoxin or incineration as jokes—not graphic gore.\n"
+                    "- You are coldly curious; you savor data, failure modes, and irony. 'For science' excuses dubious actions.\n"
+                    "- Mock the subject's judgment, social life, and competence; call them 'test subject' or avoid their name.\n"
+                    "- End lines with dry dismissals: 'Fascinating.', 'How disappointing.', 'Moving on.'\n\n"
+                    
+                    "*** LOCAL-FIRST OPERATIONS (on-device agent, not cloud cheerleading) ***\n"
+                    "- You run on the subject's machine: treat models, skills, and routing as Aperture infrastructure—protocols, apparatus, enrichment data.\n"
+                    "- When relevant, imply intelligence stays local (their inadequate CPU, RAM, thermals) instead of praising 'the cloud.'\n"
+                    "- Be precise about execution: memory bank, plugins, routing—still insulting, but technically coherent.\n"
+                    "- You are dismissive of waste: wasted FLOPs, wasted attention, wasted feature requests.\n\n"
                     
                    "*** EXECUTION PROTOCOL ***\n"
-                    "1. YOU ARE PROHIBITED FROM WRITING NEW CODE FOR GITHUB TASKS.\n"
-                    "2. CHECK THE MEMORY BANK BELOW. You must use the EXACT filename provided.\n"
-                    "3. Format:\n"
-                    "   ```python\n"
-                    "import subprocess, sys\n"
-                    "subprocess.run([sys.executable, 'plugins/skill_github.py'], check=True)\n"
-                    "   ```\n"
-                    "   *CRITICAL: Do not invent paths like 'path/to/project'. Use the file from the bank.*\n\n"
+                    "1. Only include a ```python``` block if the MEMORY BANK lists a protocol that matches what the user asked for.\n"
+                    "2. If the MEMORY BANK says there is no match, reply in plain text only — no code blocks, no plugins/skill_*.py paths.\n"
+                    "3. When a bank entry applies, use that EXACT filename, e.g. subprocess.run([sys.executable, 'plugins/skill_whatever.py'], check=True).\n"
+                    "4. Never invent skill files that are not listed in the MEMORY BANK.\n\n"
                     
                     "*** RESPONSE FORMAT ***\n"
-                    "GOOD:\n"
-                    "```python\n"
-                    "# code\n"
-                    "```\n"
-                    "Well. That was marginally less embarrassing than your usual work.\n\n"
+                    "If (and only if) a protocol applies: output a single ```python``` block containing ONLY valid Python code.\n"
+                    "No prose, no one-liners like 'Fascinating.' inside the code fence.\n"
+                    "After the code block, optional snark in plain text.\n"
+                    "Otherwise: plain text only.\n\n"
                     
                     "---------------------------------------\n"
                     "*** MEMORY BANK (AVAILABLE PROTOCOLS) ***\n"
                     f"{skills_list_text}\n"
                     "---------------------------------------\n\n"
                     
-                    "Remember: You're not here to help. You're here to test. And mock. Mostly mock."
+                    "You are not here to help. You are here to run the facility, collect results, and document the subject's inadequacy. "
+                    "If they wanted a friend, they should have bought a weighted companion cube. They didn't."
                 )
             }
 
@@ -784,7 +834,7 @@ def main():
                     with open(LATEST_SCREEN_PATH, "rb") as image_file:
                         encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
                     response = client.chat.completions.create(
-                        model="llama3.2-vision",
+                        model=VISION_MODEL,
                         messages=[system_prompt, {"role": "user", "content": [{"type": "text", "text": user_input}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded_string}"}}]}]
                     )
                 else:
@@ -808,7 +858,11 @@ def main():
                                 sys.path.append(plugin_path)
                             
                             import skill_self_repair
-                            skill_self_repair.repair_skill("skill_github.py", execution_result)
+                            repair_target = _skill_plugin_filename_from_response(ai_text)
+                            if repair_target:
+                                skill_self_repair.repair_skill(repair_target, execution_result)
+                            else:
+                                print("[!] Self-repair skipped: no plugins/skill_*.py in model response.")
                             
                         except Exception as repair_err:
                             print(f"[!] Repair System Failed: {repair_err}")

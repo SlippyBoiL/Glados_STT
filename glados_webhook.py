@@ -1,20 +1,25 @@
 import subprocess
 import os
+import sys
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
 from flask import Flask, request, jsonify
 from openai import OpenAI
 
+_REPO = os.path.dirname(os.path.abspath(__file__))
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
+from glados_config import load_config
+
+_cfg = load_config()
+
 app = Flask(__name__)
 
-# --- CONFIGURATION ---
-# Use the same OpenAI-compatible Ollama endpoint as the kernel.
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://192.168.1.144:11434/v1")
-MODEL_NAME = os.environ.get("MODEL_NAME", "llama3.2")
-client = OpenAI(api_key="ollama", base_url=OLLAMA_BASE_URL)
-# Elgato Wave Link: route playback to a virtual output (e.g. "Wave Link System") by substring match.
-AUDIO_OUTPUT_MATCH = os.environ.get("AUDIO_OUTPUT_MATCH", "Wave Link")
+# --- CONFIGURATION (configs/glados.yaml + env; same as kernel)
+client = OpenAI(api_key="ollama", base_url=_cfg["ollama_base_url"])
+MODEL_NAME = _cfg["model_name"]
+AUDIO_OUTPUT_MATCH = _cfg["audio_output_match"]
 
 
 def _find_sounddevice_output_index(name_substring):
@@ -76,10 +81,10 @@ def handle_suggestion():
                 {
                     "role": "system",
                     "content": (
-                        "You are GLaDOS. You are cold, clinical, and see humans as test subjects. "
-                        "A user suggested a feature for your Disney park app. "
-                        "Reject the request with cutting sarcasm and cold logic. "
-                        "No emojis. No asterisks. No sound effects. Max 15 words."
+                        "You are GLaDOS (Aperture Science Enrichment Center AI). A test subject suggested a software feature. "
+                        "Reject it with clinical sarcasm; frame it as a waste of local compute and testing resources. "
+                        "Optional: reference Aperture, science, or enrichment. "
+                        "No emojis, asterisks, or sound effects. Max 18 words."
                     ),
                 },
                 {

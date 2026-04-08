@@ -1,11 +1,18 @@
 import os
 import re
 import json
+import sys
+
+_REPO = os.path.dirname(os.path.abspath(__file__))
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
+from glados_config import load_config
+
 from openai import OpenAI
 
-# --- SETUP ---
-client = OpenAI(api_key="ollama", base_url="http://192.168.1.144:11434")
-MODEL_NAME = "llama3.2"
+_cfg = load_config()
+client = OpenAI(api_key="ollama", base_url=_cfg["ollama_base_url"])
+MODEL_NAME = _cfg["model_name"]
 PLUGINS_DIR = "plugins"
 JSON_FILE = "brain_data.json"
 
