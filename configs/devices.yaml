@@ -1,0 +1,39 @@
+# Device registry for SSH targets (name -> connection info).
+# You can say "ssh into <name>" and the assistant can resolve it.
+#
+# IMPORTANT: Do NOT store passwords here. Use SSH keys or provide SSH_PASSWORD at runtime.
+#
+# Example:
+# devices:
+#   pi:
+#     host: "192.168.1.174"
+#     user: "slippy"
+#     port: 22
+#   nas:
+#     host: "192.168.1.144"
+#     user: "slippy"
+devices:
+  pihole:
+    host: "192.168.1.174"
+    user: "slippy"
+    port: 22
+    # Provide the password at runtime via env var (do NOT store the password here):
+    #   set SSH_PASSWORD_PIHOLE=...
+    password_env: "SSH_PASSWORD_PIHOLE"
+
+  twingate:
+    # Same host as pihole (different service/container on the same box)
+    host: "192.168.1.174"
+    user: "slippy"
+    port: 22
+    # Provide at runtime:
+    #   set SSH_PASSWORD_TWINGATE=...
+    password_env: "SSH_PASSWORD_TWINGATE"
+
+  pi2b:
+    # IP not provided yet
+    host: ""
+    user: "slippy"
+    port: 22
+    password_env: "SSH_PASSWORD_PI2B"
+

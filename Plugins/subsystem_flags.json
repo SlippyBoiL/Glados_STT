@@ -1,0 +1,9 @@
+{
+  "vision_enabled": true,
+  "monitoring_enabled": true,
+  "cursor_auto_inject": false,
+  "dashboard_url": "http://localhost:8080",
+  "streamlit_port": 8501,
+  "brain_dashboard_port": 8080
+}
+

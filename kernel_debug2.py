@@ -55,8 +55,8 @@ COLOR_MAP = {
 
 TEMP_MAP = {"warm": 4500, "cool": 6500}
 
-
-client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url="https://api.perplexity.ai")
+# To this:
+client = Client(host='http://192.168.1.144:11434')
 
 
 # ==================================================================================

@@ -1,0 +1,20 @@
+{
+  "facts": [
+    {
+      "id": "pihole",
+      "keywords": ["pihole", "pi-hole", "dns", "blocklist", "pi"],
+      "text": "Pi-hole DNS server is used as the local ad/block resolver; outages or unusual block spikes should be treated as important early warnings."
+    },
+    {
+      "id": "twingate",
+      "keywords": ["twingate", "vpn", "remote", "access"],
+      "text": "Twingate is the remote-access mechanism; if remote services fail, check tunnel status before assuming infrastructure is down."
+    },
+    {
+      "id": "cad_scale",
+      "keywords": ["cad", "scale", "fusion", "solidworks", "measurements", "mm"],
+      "text": "CAD work should default to millimeters unless the user explicitly requests imperial units."
+    }
+  ]
+}
+

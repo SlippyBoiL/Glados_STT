@@ -2,6 +2,12 @@ venv/
 __pycache__/
 *.pyc
 plugins/settings.json
+data/facility_brain_state.json
+data/computer_brain_memory.json
+data/facility_file_index.json
+data/glados_skills_brain.json
+data/glados_browser_profile/
+data/glados_browser_session.json
 
 # Large / generated — keeps `git push` fast (was staging wav + onnx + screen buffer)
 *.wav

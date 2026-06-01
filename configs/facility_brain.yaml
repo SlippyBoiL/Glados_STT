@@ -1,0 +1,69 @@
+# Facility Brain — customize Glados's computer-wide awareness and autonomous actions.
+# Scanned state is written to data/facility_brain_state.json (safe to edit "custom" section).
+#
+# routing_mode:
+#   brain_first  — try brain decisions before LLM (fast, less "thinking")
+#   brain_only   — never call LLM for actions (chat still needs LLM — use with care)
+#   advisory     — brain only answers status/diagnose; LLM handles everything else
+
+enabled: true
+state_path: "data/facility_brain_state.json"
+scan_on_startup: true
+# false = Glados starts talking immediately; deep scan runs in background
+scan_blocking_startup: false
+deep_scan_enabled: true
+
+# Full file index of YOUR folders (Desktop, Documents, Downloads, etc.)
+# Not the whole C: drive — add paths under file_scan_extra_roots if needed.
+file_scan_enabled: true
+file_scan_max_files: 25000
+file_scan_max_depth: 12
+# Set true to walk entire user home (slower; still skips Windows/Program Files)
+file_scan_entire_home: false
+# Include AppData (lots of cache — usually leave false)
+file_scan_include_appdata: false
+# Extra folders to index, e.g. D:/Projects
+file_scan_extra_roots: []
+# file_scan_extra_roots:
+#   - path: "D:/Projects"
+#     label: projects
+
+scan_interval_sec: 3600
+
+# Browser search (opens real Chrome/Edge/Firefox — see configs/user_profile.yaml)
+web_search_engine: google
+
+routing_mode: "brain_first"
+min_decision_confidence: 0.55
+
+autonomy:
+  allow_app_open: true
+  allow_app_close: true
+  allow_powershell: true
+  allow_skill_run: true
+  allow_network_fixes: true
+  allow_server_ssh: true
+  allow_web_search: true
+
+# Extra facts merged into the brain (your notes for decision logic)
+custom_facts:
+  - id: primary_pc
+    keywords: ["pc", "computer", "machine", "this box"]
+    text: "This Windows PC is the primary Glados host."
+
+# Map casual names → app keys used by KernelLamma find_app_path
+app_aliases:
+  browser: chrome
+  vscode: code
+  vs code: code
+  terminal: powershell
+  cmd: powershell
+
+# Optional keyword → action overrides (highest priority after exact patterns)
+decision_rules:
+  - keywords: ["status", "how are you", "system report", "full scan"]
+    action: report_status
+  - keywords: ["flush dns", "fix dns", "fix internet", "fix wifi", "network fix"]
+    action: network_repair
+  - keywords: ["rescan", "scan computer", "update brain", "refresh brain"]
+    action: rescan

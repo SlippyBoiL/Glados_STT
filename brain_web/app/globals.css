@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background-image: radial-gradient(
+    ellipse at top,
+    rgba(74, 127, 165, 0.08) 0%,
+    transparent 55%
+  );
+}
+
+.panel {
+  @apply rounded-lg border border-aperture-border bg-aperture-panel/90 backdrop-blur;
+}
+
+.stage-hearing {
+  @apply border-aperture-blue/50 shadow-glowBlue;
+}
+.stage-memory {
+  @apply border-emerald-600/40;
+}
+.stage-intent {
+  @apply border-violet-500/40;
+}
+.stage-reason {
+  @apply border-aperture-orange/50 shadow-glow;
+}
+.stage-action {
+  @apply border-red-500/40;
+}
+
+/* Command Center HUD */
+.hud-root {
+  font-family: ui-monospace, "Cascadia Code", "Segoe UI", sans-serif;
+}
+
+.hud-grid {
+  background-image:
+    linear-gradient(rgba(61, 214, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(61, 214, 255, 0.04) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(ellipse at center, black 20%, transparent 75%);
+}
+
+.hud-panel {
+  @apply rounded border border-hud-cyan/15 bg-hud-panel backdrop-blur-sm;
+  box-shadow: 0 0 20px rgba(26, 140, 255, 0.08), inset 0 0 30px rgba(61, 214, 255, 0.03);
+}

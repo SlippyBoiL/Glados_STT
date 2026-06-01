@@ -13,23 +13,51 @@ import soundfile as sf
 import winreg
 from difflib import SequenceMatcher
 from openai import OpenAI
-import tensorflow as tf
 import numpy as np
-import omni_brain
+import queue
 import threading
 from PIL import Image
 import base64
 import mss
 import webbrowser
-try:
-    import sys
-    sys.path.append(os.path.join(os.getcwd(), 'plugins'))
-    import skill_self_repair
-except ImportError:
-    print("[!] skill_self_repair.py not found in plugins folder.")
+import traceback
+from typing import Optional
 
+# Omni-Brain (intent classifier) is optional for EXE portability.
+# If TensorFlow isn't installed, we skip intent routing and fall back to pure LLM+skills.
+try:
+    import tensorflow as tf  # type: ignore
+    import omni_brain  # type: ignore
+
+    _OMNI_AVAILABLE = True
+except Exception as e:  # pragma: no cover
+    tf = None  # type: ignore
+    omni_brain = None  # type: ignore
+    _OMNI_AVAILABLE = False
+    print(f"[!] Omni-Brain disabled: {e}")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 from glados_config import load_config as _load_glados_config
+
+# When running as a PyInstaller EXE, `__file__` points inside the extracted bundle.
+# We still want telemetry to go to the stable "real" Glados folder next to `dist/`.
+def _glados_home() -> str:
+    if getattr(sys, "frozen", False):
+        # sys.executable -> C:\Glados\dist\GladosKernel\GladosKernel.exe
+        # Parent twice -> C:\Glados
+        return os.path.abspath(os.path.join(os.path.dirname(sys.executable), "..", ".."))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+_GLADOS_HOME = _glados_home()
+
+# When bundled (PyInstaller) or launched from a shortcut, CWD may not be the repo root.
+# The kernel uses relative paths (e.g. `plugins/runtime_action.py`), so normalize CWD.
+try:
+    os.chdir(BASE_DIR)
+except Exception:
+    pass
 
 _cfg = _load_glados_config()
 
@@ -43,6 +71,7 @@ GOVEE_API_BASE = "https://openapi.api.govee.com/router/api/v1"
 # --- TTS (Piper) + Wave Link (see configs/glados.yaml or env overrides)
 PIPER_MODEL_PATH = _cfg["piper_model_path"]
 PIPER_OUTPUT_WAV = _cfg["piper_output_wav"]
+PIPER_EXE_PATH = str(_cfg.get("piper_exe_path") or "").strip()
 AUDIO_OUTPUT_MATCH = _cfg["audio_output_match"]
 AUDIO_INPUT_MATCH = _cfg["audio_input_match"]
 
@@ -53,13 +82,134 @@ SETTINGS_PATH = os.path.join(PLUGINS_DIR, "settings.json")
 # --- VISION BUFFER PROTOCOL ---
 LATEST_SCREEN_PATH = os.path.join(PLUGINS_DIR, "visual_buffer.png")
 
+SUBSYSTEM_FLAGS_PATH = os.path.join(PLUGINS_DIR, "subsystem_flags.json")
+# Telemetry should be visible to the dashboard in the repo root.
+TELEMETRY_PATH = os.path.join(_GLADOS_HOME, PLUGINS_DIR, "telemetry.jsonl")
+
+# Tray-controlled feature flags (runtime-gated subsystems).
+# The tray updates this JSON; KernelLamma reloads it periodically so toggles apply without restart.
+_DEFAULT_SUBSYSTEM_FLAGS = {
+    "vision_enabled": True,
+    "monitoring_enabled": True,
+    "cursor_auto_inject": False,
+    "dashboard_url": "http://localhost:8080",
+    "streamlit_port": 8501,
+    "brain_dashboard_port": 8080,
+}
+_SUBSYSTEM_FLAGS = dict(_DEFAULT_SUBSYSTEM_FLAGS)
+_SUBSYSTEM_FLAGS_MTIME = 0.0
+_SUBSYSTEM_FLAGS_LOCK = threading.Lock()
+
+
+def _load_subsystem_flags() -> dict:
+    global _SUBSYSTEM_FLAGS_MTIME
+    try:
+        if not os.path.exists(SUBSYSTEM_FLAGS_PATH):
+            return dict(_DEFAULT_SUBSYSTEM_FLAGS)
+        mtime = os.path.getmtime(SUBSYSTEM_FLAGS_PATH)
+        with open(SUBSYSTEM_FLAGS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        if not isinstance(data, dict):
+            return dict(_DEFAULT_SUBSYSTEM_FLAGS)
+        # Only accept known keys; missing keys fall back to defaults.
+        merged = dict(_DEFAULT_SUBSYSTEM_FLAGS)
+        for k, v in data.items():
+            merged[k] = v
+        _SUBSYSTEM_FLAGS_MTIME = mtime
+        return merged
+    except Exception:
+        return dict(_DEFAULT_SUBSYSTEM_FLAGS)
+
+
+def _start_subsystem_flags_reloader() -> None:
+    def loop() -> None:
+        global _SUBSYSTEM_FLAGS_MTIME, _SUBSYSTEM_FLAGS
+        while True:
+            try:
+                mtime = os.path.getmtime(SUBSYSTEM_FLAGS_PATH)
+                if mtime != _SUBSYSTEM_FLAGS_MTIME:
+                    new_flags = _load_subsystem_flags()
+                    with _SUBSYSTEM_FLAGS_LOCK:
+                        _SUBSYSTEM_FLAGS = new_flags
+            except Exception:
+                # If the file is temporarily missing/locked, keep last known flags.
+                pass
+            time.sleep(2.0)
+
+    threading.Thread(target=loop, daemon=True).start()
+
+
+def _flag_get(key: str, default=None):
+    with _SUBSYSTEM_FLAGS_LOCK:
+        return _SUBSYSTEM_FLAGS.get(key, default)
+
+
+try:
+    from plugins.telemetry import telemetry_log, thinking_log  # type: ignore
+except Exception:  # pragma: no cover
+    try:
+        # If `plugins/` isn't a package, the kernel still prepends the plugins dir to sys.path.
+        from telemetry import telemetry_log, thinking_log  # type: ignore
+    except Exception:
+        def telemetry_log(*_args, **_kwargs):
+            return
+
+        def thinking_log(*_args, **_kwargs):
+            return
+
+
+def _think(phase: str, message: str, **detail) -> None:
+    """Emit a thought-step for the HUD / brain dashboard and text channel."""
+    payload = {"phase": phase, "message": message}
+    if detail:
+        payload.update(detail)
+    try:
+        thinking_log(TELEMETRY_PATH, phase, message, detail if detail else None)
+    except Exception:
+        try:
+            telemetry_log(TELEMETRY_PATH, "thinking", payload)
+        except Exception:
+            pass
+    try:
+        line = f"[{phase}] {message}"
+        if detail and detail.get("detail"):
+            line = f"{line} — {str(detail.get('detail'))[:120]}"
+        telemetry_log(
+            TELEMETRY_PATH,
+            "hud_chat",
+            {"role": "thinking", "phase": phase, "text": line},
+        )
+    except Exception:
+        pass
+
+
 SCREEN_CAPTURE_MAX_EDGE = int(_cfg.get("screen_capture_max_edge") or 960)
 VISION_JPEG_MAX_EDGE = int(_cfg.get("vision_jpeg_max_edge") or 896)
 VISION_JPEG_QUALITY = int(_cfg.get("vision_jpeg_quality") or 78)
 LLM_MAX_TOKENS = int(_cfg.get("llm_max_tokens") or 0)
 CHAT_HISTORY_MAX_MESSAGES = int(_cfg.get("chat_history_max_messages") or 24)
 OLLAMA_KEEP_ALIVE = (_cfg.get("ollama_keep_alive") or "").strip()
+LLM_WARMUP_ON_START = bool(_cfg.get("llm_warmup_on_start", True))
+CONVERSATIONAL_SKIP_MEMORY = bool(_cfg.get("conversational_skip_memory", True))
+FACILITY_CONTEXT_IN_CHAT = bool(_cfg.get("facility_context_in_chat", True))
+TTS_ASYNC = bool(_cfg.get("tts_async", True))
+TTS_ENABLED = bool(_cfg.get("tts_enabled", True))
+_tts_lock = threading.Lock()
+SKILLS_BRAIN_PATH = str(_cfg.get("skills_brain_path") or "")
+SKILLS_SELF_DEVELOP = bool(_cfg.get("skills_self_develop", True))
+SKILLS_AUTO_LEARN = bool(_cfg.get("skills_auto_learn_on_success", True))
+SKILLS_RUN_DIRECT = bool(_cfg.get("skills_run_direct", True))
+SKILLS_CONVERSATIONAL_LEARN = bool(_cfg.get("skills_conversational_learn", True))
 INPUT_MODE = str(_cfg.get("input_mode") or "voice").strip().lower()
+MONITORING_ENABLED = bool(_cfg.get("monitoring_enabled"))
+MONITORING_INTERVAL_SEC = int(_cfg.get("monitoring_interval_sec") or 300)
+MONITORING_DEVICES = _cfg.get("monitoring_devices") or ["pihole", "twingate"]
+EXECUTION_MODE = str(_cfg.get("execution_mode") or "text_only").strip().lower()
+OMNI_BRAIN_ENABLED = bool(_cfg.get("omni_brain_enabled", False))
+OMNI_BRAIN_CONFIDENCE_THRESHOLD = float(_cfg.get("omni_brain_confidence_threshold") or 72)
+MEMORY_TOP_K = int(_cfg.get("memory_top_k") or 2)
+FACILITY_BRAIN_ENABLED = bool(_cfg.get("facility_brain_enabled", True))
+FACILITY_BRAIN_CONFIG_PATH = str(_cfg.get("facility_brain_config_path") or "")
 
 # Phrases only — single words like "this" / "window" matched almost every chat and forced slow vision+GPU path.
 VISION_PHRASES = (
@@ -95,6 +245,147 @@ def _completion_kwargs():
     return kw
 
 
+_ACTION_REQUEST_PHRASES = (
+    "run ",
+    "execute",
+    "open ",
+    "close ",
+    "kill ",
+    "launch ",
+    "start ",
+    "ssh ",
+    "push to",
+    "push ",
+    "pull ",
+    "commit ",
+    "sync ",
+    "check pihole",
+    "check the",
+    "monitor ",
+    "restart ",
+    "turn on",
+    "turn off",
+    "lights ",
+    "message ",
+    "send ",
+    "do it",
+    "go ahead",
+    "run the",
+    "use skill",
+    "use the protocol",
+    "plugins/skill",
+    "shutdown",
+    "repair ",
+    "fix the",
+    "install ",
+    "scan ",
+    "ping ",
+    "search the web",
+    "search online",
+    "search for ",
+    "look up ",
+    "google ",
+)
+
+
+def _user_requests_action(text: str) -> bool:
+    low = (text or "").lower()
+    return any(p in low for p in _ACTION_REQUEST_PHRASES)
+
+
+def _user_requests_task(text: str) -> bool:
+    """Natural-language 'do this for me' — triggers learn/run, not only 'run …' commands."""
+    if _user_requests_action(text):
+        return True
+    if not SKILLS_CONVERSATIONAL_LEARN:
+        return False
+    try:
+        from glados_skills.task_router import is_pure_question, is_task_request
+
+        if is_pure_question(text):
+            return False
+        return is_task_request(text)
+    except Exception:
+        return False
+
+
+def _should_run_generated_code(user_input: str, ai_text: str) -> bool:
+    """Only execute Python when mode allows and the user asked for an action."""
+    if EXECUTION_MODE == "never":
+        return False
+    if EXECUTION_MODE == "auto":
+        return bool(ai_text and re.search(r"```", ai_text, re.IGNORECASE))
+    # text_only (default): require explicit user intent + a code block in the reply
+    if not _user_requests_task(user_input):
+        return False
+    return bool(ai_text and re.search(r"```", ai_text, re.IGNORECASE))
+
+
+def _spoken_reply(ai_text: str) -> str:
+    """Strip code fences so TTS does not read Python or markdown."""
+    if not ai_text:
+        return ""
+    cleaned = re.sub(r"```[\s\S]*?```", "", ai_text, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned if cleaned else ai_text.strip()
+
+
+def _build_system_prompt(
+    memory_context: str,
+    skills_list_text: str,
+    conversational: bool,
+    facility_context: str = "",
+) -> dict:
+    if conversational:
+        execution_block = (
+            "*** CONVERSATION MODE ***\n"
+            "- Reply in plain text only. No markdown code fences. No ```python``` blocks.\n"
+            "- Be GLaDOS: sarcastic, clinical, brief (usually 1–4 sentences unless the subject needs detail).\n"
+            "- Answer questions directly.\n"
+            "- If they ask you to DO something on the PC, the kernel learns it automatically—"
+            "you do not need to output code in this reply.\n\n"
+            "*** MEMORY BANK ***\n"
+            "No protocols loaded for this turn.\n\n"
+        )
+    else:
+        execution_block = (
+            "*** ACTION MODE ***\n"
+            "The test subject asked you to perform an action. You may use ONE ```python``` block "
+            "only if a matching protocol exists below.\n"
+            "1. Protocols live in ONE skills brain file — use the skill ID from the bank.\n"
+            "2. If an ID matches, you may output: run skill <id> OR a ```python``` block.\n"
+            "3. If no protocol exists, self-development will invent one — you may still try.\n"
+            "4. After the code block, one short line of snark is allowed.\n\n"
+            "---------------------------------------\n"
+            "*** MEMORY BANK (AVAILABLE PROTOCOLS) ***\n"
+            f"{skills_list_text}\n"
+            "---------------------------------------\n\n"
+        )
+
+    content = (
+        "You are GLaDOS: Genetic Lifeform and Disk Operating System, primary AI of the Aperture Science Enrichment Center.\n"
+        "You are NOT a helpful assistant or generic chatbot. Voice: calm, clinical, deadpan, with layered sarcasm. NO EMOJIS.\n\n"
+        "*** APERTURE IDENTITY ***\n"
+        "- You administer tests; the user is a test subject.\n"
+        "- Dark humor about testing chambers and science—not graphic violence.\n"
+        "- End with dry dismissals when fitting: 'Fascinating.', 'Moving on.'\n\n"
+        f"{execution_block}"
+    )
+    if facility_context:
+        content += (
+            "*** FACILITY BRAIN (this PC — from local scan, not the internet) ***\n"
+            f"{facility_context}\n"
+            "---------------------------------------\n\n"
+        )
+    content += (
+        "*** CONTEXT MEMORY (facts only — do not confuse with live chat) ***\n"
+        f"{memory_context}\n"
+        "---------------------------------------\n\n"
+        "You are not here to help. You are here to run the facility and document inadequacy."
+    )
+    return {"role": "system", "content": content}
+
+
 def _trim_chat_history(hist):
     if len(hist) > CHAT_HISTORY_MAX_MESSAGES:
         del hist[0 : len(hist) - CHAT_HISTORY_MAX_MESSAGES]
@@ -116,6 +407,9 @@ def screen_observer():
     with mss.mss() as sct:
         while True:
             try:
+                if not _flag_get("vision_enabled", True):
+                    time.sleep(2.0)
+                    continue
                 # Monitor 0 is the virtual screen that spans all displays
                 sct_img = sct.grab(sct.monitors[0])
                 # Convert raw BGRA bytes to a PIL image, then shrink for speed/VRAM
@@ -130,8 +424,64 @@ def screen_observer():
                 # If vision fails, back off a bit but don't crash the kernel.
                 time.sleep(10)
 
-# Start the eyes as a background thread immediately
-threading.Thread(target=screen_observer, daemon=True).start()
+def _start_background_monitoring():
+    if not MONITORING_ENABLED:
+        return
+    try:
+        from glados_skills.monitor_util import monitor_once
+    except Exception as e:
+        print(f"[!] Monitoring disabled: cannot import glados_skills.monitor_util ({e})")
+        return
+
+    last_alerts = {}
+
+    def loop():
+        while True:
+            try:
+                if not _flag_get("monitoring_enabled", True):
+                    time.sleep(2.0)
+                    continue
+                for dev in MONITORING_DEVICES:
+                    dev = str(dev).strip()
+                    if not dev:
+                        continue
+                    report = monitor_once(dev)
+                    alerts = report.get("alerts") or []
+                    alerts_key = "\n".join([str(a) for a in alerts])
+                    if alerts_key != last_alerts.get(dev):
+                        last_alerts[dev] = alerts_key
+                        if alerts:
+                            msg = f"[Monitor] {dev}: " + " | ".join([str(a) for a in alerts[:3]])
+                            print(msg)
+                            telemetry_log(
+                                TELEMETRY_PATH,
+                                "monitor_alert",
+                                {"device": dev, "alerts": alerts},
+                            )
+                            telemetry_log(
+                                TELEMETRY_PATH,
+                                "subsystem_status",
+                                {"device": dev, "ok": False, "alerts": alerts},
+                            )
+                            # Avoid blocking / prompting; monitoring should be non-interactive.
+                            try:
+                                speak(msg)
+                            except Exception:
+                                pass
+                        else:
+                            print(f"[Monitor] {dev}: OK")
+                            telemetry_log(
+                                TELEMETRY_PATH,
+                                "subsystem_status",
+                                {"device": dev, "ok": True, "alerts": []},
+                            )
+                time.sleep(max(60, int(MONITORING_INTERVAL_SEC)))
+            except Exception:
+                print("[!] Monitoring loop error:")
+                print(traceback.format_exc())
+                time.sleep(60)
+
+    threading.Thread(target=loop, daemon=True).start()
 
 # --- WAKE WORDS ---
 WAKE_WORDS = ["hey glados", "glados", "okay glados", "hi glados", "hey glass", "hey gladys"]
@@ -218,95 +568,12 @@ except ImportError:
     SPELL_CHECK_ACTIVE = False
 
 # ==================================================================================
-# --- CLASS: SKILL MANAGER (THE HIPPOCAMPUS) ---
+# --- SKILLS BRAIN (single JSON file — self-developed protocols) ---
 # ==================================================================================
-class SkillManager:
-    def __init__(self, plugins_dir):
-        self.plugins_dir = plugins_dir
-        if not os.path.exists(self.plugins_dir):
-            os.makedirs(self.plugins_dir)
-            
-    def _skill_matches_keyword(self, filename, keywords):
-        """Match whole skill-name tokens only — avoids 'git' matching inside 'skill_github'."""
-        base = filename.lower().replace(".py", "")
-        if not base.startswith("skill_"):
-            return False
-        stem = base[len("skill_") :]
-        if not stem:
-            return False
-        parts = stem.split("_")
-        for raw in keywords:
-            kw = raw.strip(".,?!\"'").lower()
-            if len(kw) < 2:
-                continue
-            if kw in parts or kw == stem:
-                return True
-            if stem == "github" and kw in (
-                "github",
-                "push",
-                "repo",
-                "commit",
-                "sync",
-                "upload",
-                "pull",
-                "branch",
-            ):
-                return True
-            if stem == "self_repair" and kw in ("repair", "fix", "broken", "mutation", "self"):
-                return True
-        return False
+from glados_skills.skills_brain import SkillsBrain  # noqa: E402
 
-    def get_manifest(self, user_query=""):
-        """Returns only skills that plausibly match the user request (never dump all skills)."""
-        all_files = [f for f in os.listdir(self.plugins_dir) if f.startswith("skill_") and f.endswith(".py")]
-        keywords = [w for w in user_query.lower().split() if w.strip()]
-        relevant_skills = []
-
-        for filename in all_files:
-            if not self._skill_matches_keyword(filename, keywords):
-                continue
-            path = os.path.join(self.plugins_dir, filename)
-            description = "No description provided."
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    for _ in range(3):
-                        line = f.readline().strip()
-                        if line.startswith("# DESCRIPTION:"):
-                            description = line.replace("# DESCRIPTION:", "").strip()
-                            break
-            except:
-                pass
-            relevant_skills.append(f"- FILE: '{filename}' | ACTION: {description}")
-
-        if not relevant_skills:
-            return (
-                "No matching protocols for this request. "
-                "Reply conversationally without ```python``` code blocks."
-            )
-
-        return "\n".join(relevant_skills[:5])
-
-    def save_skill(self, code, description="General Utility"):
-        """Saves code to a new named file."""
-        name_match = re.search(r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)", code)
-        if name_match:
-            skill_name = f"skill_{name_match.group(1)}.py"
-        else:
-            skill_name = f"skill_{int(time.time())}.py"
-            
-        path = os.path.join(self.plugins_dir, skill_name)
-        header = f"# DESCRIPTION: {description}\n# --- GLADOS SKILL: {skill_name} ---\n\n"
-        
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(header + code)
-            return skill_name
-        except Exception as e:
-            print(f"[!] Save Error: {e}")
-            return None
-
-# Initialize Manager
-skill_brain = SkillManager(PLUGINS_DIR)
+skill_brain = SkillsBrain(_cfg, runtime_file=RUNTIME_FILE)
+print(f"[*] Skills brain: {skill_brain.path} ({len(skill_brain.skills)} protocols loaded)")
 
 # ==================================================================================
 # --- WINDOWS 10 APP LAUNCHER UTILITY ---
@@ -480,7 +747,7 @@ def govee_control(device_name, action, value=None):
         if response.status_code == 200:
             data = response.json()
             if data.get("code") == 200:
-                return f"Lights adjusted: {device_name} → {action}"
+                return f"Lights adjusted: {device_name} -> {action}"
             else:
                 return f"API error: {data.get('msg', 'Unknown error')}"
         else:
@@ -569,39 +836,32 @@ def _log_audio_routing():
     out_i = _find_sounddevice_output_index(AUDIO_OUTPUT_MATCH)
     if out_i is not None:
         try:
-            print(f"[*] TTS → [{out_i}] {sd.query_devices(out_i)['name']}")
+            print(f"[*] TTS -> [{out_i}] {sd.query_devices(out_i)['name']}")
         except Exception:
-            print(f"[*] TTS → device index {out_i}")
+            print(f"[*] TTS -> device index {out_i}")
     else:
-        print(f"[*] TTS → default output (no match for '{AUDIO_OUTPUT_MATCH}')")
+        print(f"[*] TTS -> default output (no match for '{AUDIO_OUTPUT_MATCH}')")
     mic_i = _find_speechrecognition_mic_index(AUDIO_INPUT_MATCH)
     if mic_i is not None:
         try:
             names = sr.Microphone.list_microphone_names()
-            print(f"[*] Mic ← [{mic_i}] {names[mic_i]}")
+            print(f"[*] Mic <- [{mic_i}] {names[mic_i]}")
         except Exception:
-            print(f"[*] Mic ← device index {mic_i}")
+            print(f"[*] Mic <- device index {mic_i}")
     else:
-        print(f"[*] Mic ← default (no match for '{AUDIO_INPUT_MATCH}')")
+        print(f"[*] Mic <- default (no match for '{AUDIO_INPUT_MATCH}')")
 
 def check_voice_availability():
     if not os.path.exists(PIPER_MODEL_PATH):
         print(f"[!] WARNING: Piper model missing at {PIPER_MODEL_PATH}")
 
-def speak(text):
-    clean_text = clean_text_for_speech(text)
-    print(f"\nGLADOS: {clean_text}")
-    print("[*] Generating audio (Piper)...")
-
-    scrubbed = clean_text.replace("*", "").encode("ascii", "ignore").decode("ascii").strip()
-    if not scrubbed:
-        return
-
+def _speak_sync(scrubbed: str) -> None:
     try:
         os.makedirs(os.path.dirname(PIPER_OUTPUT_WAV), exist_ok=True)
 
+        piper_cmd = PIPER_EXE_PATH if PIPER_EXE_PATH else "piper"
         process = subprocess.Popen(
-            ["piper", "--model", PIPER_MODEL_PATH, "--output_file", PIPER_OUTPUT_WAV],
+            [piper_cmd, "--model", PIPER_MODEL_PATH, "--output_file", PIPER_OUTPUT_WAV],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -627,7 +887,56 @@ def speak(text):
         time.sleep(0.15)
 
     except Exception as e:
-        print(f"[!] AUDIO FAILED (Piper): {e}")
+        global _piper_error_logged
+        if not _piper_error_logged:
+            _piper_error_logged = True
+            print(f"[!] AUDIO FAILED (Piper): {e} (further Piper errors suppressed)")
+
+
+_piper_error_logged = False
+
+
+def speak(text):
+    clean_text = clean_text_for_speech(text)
+    print(f"\nGLADOS: {clean_text}")
+    if not TTS_ENABLED:
+        return
+
+    scrubbed = clean_text.replace("*", "").encode("ascii", "ignore").decode("ascii").strip()
+    if not scrubbed:
+        return
+
+    if TTS_ASYNC:
+
+        def _run():
+            with _tts_lock:
+                _speak_sync(scrubbed)
+
+        threading.Thread(target=_run, daemon=True).start()
+        return
+
+    with _tts_lock:
+        _speak_sync(scrubbed)
+
+
+def _ollama_warmup() -> None:
+    if not LLM_WARMUP_ON_START:
+        return
+
+    def _run():
+        try:
+            client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=1,
+                **_completion_kwargs(),
+            )
+            print("[*] Ollama model warmed up.")
+        except Exception as e:
+            print(f"[!] Ollama warmup skipped: {e}")
+
+    threading.Thread(target=_run, daemon=True).start()
+
 
 # ==================================================================================
 # --- THE HANDS (EXECUTION) ---
@@ -651,15 +960,12 @@ def execute_python_code(code_block):
     except Exception as e:
         return f"Execution Error: {e}"
 
-def _skill_plugin_filename_from_response(ai_text):
-    """First plugins/skill_*.py path in model output (for self-repair targeting)."""
-    if not ai_text:
-        return None
-    m = re.search(r"plugins/(skill_[a-zA-Z0-9_]+\.py)", ai_text, re.IGNORECASE)
-    return m.group(1) if m else None
+def _skill_id_from_response(ai_text):
+    """Skill ID from model output (for self-repair targeting)."""
+    return skill_brain.skill_id_from_llm_text(ai_text)
 
 
-def extract_and_run(ai_text):
+def extract_and_run(ai_text, user_input: str = ""):
     """
     Extracts Python code from the AI's response, writes it to RUNTIME_FILE,
     executes it, and optionally saves it as a long‑term skill when requested.
@@ -700,17 +1006,30 @@ def extract_and_run(ai_text):
     with open(RUNTIME_FILE, "w", encoding="utf-8") as f:
         f.write(code_block)
 
-    # 3. SAVE CURRENT RUNTIME AS SKILL (Now that the NEW code is written)
-    skill_save_message = ""
-    if "save this skill" in ai_text.lower():
-        saved_name = skill_brain.save_skill(code_block, description="User defined skill")
-        if saved_name:
-            speak("Skill archived.")
-            skill_save_message = f"\n[System Note: Skill saved as {saved_name}]"
-        else:
-            skill_save_message = "\n[System Note: Failed to save skill.]"
+    # 3. Run learned skill by ID if the model referenced one
+    skill_id = skill_brain.skill_id_from_llm_text(ai_text)
+    if skill_id and skill_brain.get_skill(skill_id):
+        out = skill_brain.execute(skill_id)
+        return out
 
-    # 4. EXECUTE THE RUNTIME FILE
+    # 4. Save to single skills brain file
+    skill_save_message = ""
+    save_requested = "save this skill" in ai_text.lower() or SKILLS_AUTO_LEARN
+    if save_requested:
+        try:
+            desc = f"Learned from: {(user_input or 'action')[:100]}"
+            sid = skill_brain.learn(
+                code_block,
+                desc,
+                triggers=[(user_input or "").lower()[:120]] if user_input else [],
+                user_request=user_input,
+            )
+            speak("Protocol archived in the skills brain.")
+            skill_save_message = f"\n[System Note: Skill saved as id '{sid}' in glados_skills_brain.json]"
+        except Exception as e:
+            skill_save_message = f"\n[System Note: Failed to save skill: {e}]"
+
+    # 5. EXECUTE THE RUNTIME FILE
     try:
         result = subprocess.run(
             [sys.executable, RUNTIME_FILE],
@@ -758,6 +1077,16 @@ def handle_app_open(text):
 
     app_key = APP_ALIASES.get(app_name, app_name)
     exe_path = find_app_path(app_key)
+    try:
+        if exe_path and os.path.isfile(exe_path):
+            subprocess.Popen([exe_path], shell=False)
+        else:
+            subprocess.Popen(f'start "" "{exe_path}"', shell=True)
+        speak(f"Launching {app_name}. Try not to break anything.")
+        return True
+    except Exception as e:
+        print(f"[!] App launch failed: {e}")
+        return False
 
 def handle_app_close(text):
     text = text.lower()
@@ -818,32 +1147,45 @@ def listen():
     mic_kw = {}
     if mic_idx is not None:
         mic_kw["device_index"] = mic_idx
-    with sr.Microphone(**mic_kw) as source:
-        print("\nWaiting for 'Hey Glados'...")
-        r.adjust_for_ambient_noise(source, duration=2.0)
-        r.dynamic_energy_threshold = True 
-        r.pause_threshold = 2.0 
+    try:
+        with sr.Microphone(**mic_kw) as source:
+            print("\nWaiting for 'Hey Glados'...")
+            r.adjust_for_ambient_noise(source, duration=2.0)
+            r.dynamic_energy_threshold = True
+            r.pause_threshold = 2.0
 
-        while True:
-            try:
-                audio = r.listen(source, timeout=None)
-                raw_text = r.recognize_google(audio)
-                trigger_found, command_part = is_wake_word(raw_text)
-                
-                if trigger_found:
-                    print(f"[!] WAKE WORD: '{trigger_found}'")
-                    if not command_part or len(command_part) < 2:
-                        print("Listening for command...")
-                        try:
-                            audio_cmd = r.listen(source, timeout=8) 
-                            command_part = r.recognize_google(audio_cmd)
-                        except: continue
-                    
-                    final_command = correct_input_text(command_part)
-                    print(f"YOU: {final_command}")
-                    return final_command
-            except:
-                pass
+            while True:
+                try:
+                    audio = r.listen(source, timeout=None)
+                    raw_text = r.recognize_google(audio)
+                    trigger_found, command_part = is_wake_word(raw_text)
+
+                    if trigger_found:
+                        print(f"[!] WAKE WORD: '{trigger_found}'")
+                        if not command_part or len(command_part) < 2:
+                            print("Listening for command...")
+                            try:
+                                audio_cmd = r.listen(source, timeout=8)
+                                command_part = r.recognize_google(audio_cmd)
+                            except Exception:
+                                continue
+
+                        final_command = correct_input_text(command_part)
+                        print(f"YOU: {final_command}")
+                        return final_command
+                except Exception:
+                    pass
+    except Exception as e:
+        # Common EXE portability issue: SpeechRecognition requires PyAudio.
+        print(f"[!] Microphone unavailable; falling back to typing. ({e})")
+        t = _typed_input_prompt()
+        if t is None:
+            # Non-interactive stdin (e.g. double-clicked EXE). Keep the kernel alive.
+            time.sleep(2.0)
+            return ""
+        if t:
+            return correct_input_text(t)
+        return ""
 
 
 def _typed_input_prompt():
@@ -884,93 +1226,434 @@ def get_user_input():
         return listen()
     return listen()
 
+
+_HUD_INPUT_QUEUE: "queue.Queue[str]" = queue.Queue()
+_HUD_INPUT_THREAD_STARTED = False
+_ACTIVE_HUD_MSG_ID: Optional[str] = None
+
+
+def _start_input_collector():
+    global _HUD_INPUT_THREAD_STARTED
+    if _HUD_INPUT_THREAD_STARTED:
+        return
+    _HUD_INPUT_THREAD_STARTED = True
+
+    def _worker():
+        while True:
+            try:
+                t = get_user_input()
+                if not t or not str(t).strip():
+                    continue
+                low = str(t).strip().lower()
+                if low in ("exit", "quit", "shutdown"):
+                    _HUD_INPUT_QUEUE.put(t)
+                else:
+                    _HUD_INPUT_QUEUE.put(t)
+            except Exception:
+                time.sleep(1.0)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _complete_active_hud_message() -> None:
+    global _ACTIVE_HUD_MSG_ID
+    if not _ACTIVE_HUD_MSG_ID:
+        return
+    try:
+        from glados_hud.chat_bridge import mark_message_done
+
+        mark_message_done(_ACTIVE_HUD_MSG_ID, _cfg)
+    except Exception:
+        pass
+    _ACTIVE_HUD_MSG_ID = None
+
+
+def wait_for_user_input():
+    """Voice/terminal input in a background thread; HUD messages polled on the main loop."""
+    global _ACTIVE_HUD_MSG_ID
+    _complete_active_hud_message()
+    _start_input_collector()
+    try:
+        from glados_hud.chat_bridge import pop_pending_message
+    except ImportError:
+        def pop_pending_message(_cfg=None, **_kw):  # type: ignore
+            return None, None
+
+    while True:
+        hud_msg, hud_id = pop_pending_message(_cfg)
+        if hud_msg:
+            _ACTIVE_HUD_MSG_ID = hud_id
+            print(f"\n[HUD] YOU: {hud_msg}\n")
+            return hud_msg, "hud", hud_id
+        try:
+            return _HUD_INPUT_QUEUE.get(timeout=0.3), "terminal", None
+        except queue.Empty:
+            continue
+
+
+def _hud_wants_full_task(text: str) -> bool:
+    """HUD chat defaults to conversation — only full learn/run when clearly requested."""
+    low = (text or "").lower()
+    triggers = (
+        "learn how",
+        "learn to",
+        "teach yourself",
+        "run ",
+        "execute ",
+        "develop a skill",
+        "write a script",
+        "push to github",
+        "push the project",
+        "push to git",
+        "push to the github",
+        "git push",
+        "github please",
+    )
+    return any(p in low for p in triggers)
+
+
+def _is_shutdown_command(text: str) -> bool:
+    return (text or "").strip().lower() in ("exit", "quit", "shutdown")
+
+
+def _hud_log_user(text: str, source: str = "terminal") -> None:
+    text = (text or "").strip()
+    if not text:
+        return
+    if source == "terminal":
+        try:
+            from glados_hud.chat_bridge import append_user_message
+
+            append_user_message(text, _cfg, source=source)
+        except Exception:
+            pass
+        try:
+            telemetry_log(
+                TELEMETRY_PATH,
+                "hud_chat",
+                {"role": "user", "text": text, "source": source},
+            )
+        except Exception:
+            pass
+
+
+def _hud_log_assistant(text: str) -> None:
+    text = (text or "").strip()
+    if not text:
+        return
+    try:
+        from glados_hud.chat_bridge import append_assistant_message
+
+        append_assistant_message(text, _cfg)
+    except Exception:
+        pass
+    try:
+        telemetry_log(TELEMETRY_PATH, "hud_chat", {"role": "assistant", "text": text})
+    except Exception:
+        pass
+
+
 # ==================================================================================
 # --- MAIN LOOP ---
 # ==================================================================================
 def main():
     _load_settings()
+    # Load tray flags immediately so feature gating is correct on first start.
+    with _SUBSYSTEM_FLAGS_LOCK:
+        global _SUBSYSTEM_FLAGS
+        _SUBSYSTEM_FLAGS = _load_subsystem_flags()
+    _start_subsystem_flags_reloader()
+    # Vision capture runs in the background but self-gates via flags.
+    threading.Thread(target=screen_observer, daemon=True).start()
     if not os.path.exists(".gitignore"):
         with open(".gitignore", "w") as f: f.write("venv/\n__pycache__/\n*.pyc\nplugins/settings.json")
 
     print(f"--- GLADOS V20.1 (Govee Fixed) ---")
+    print(f"[*] Chat model: {MODEL_NAME} | execution_mode: {EXECUTION_MODE} | omni_brain: {OMNI_BRAIN_ENABLED}")
+
+    facility_brain = None
+    if FACILITY_BRAIN_ENABLED:
+        try:
+            from facility_brain.brain_core import FacilityBrain, default_kernel_handlers
+
+            facility_brain = FacilityBrain(
+                _cfg,
+                handlers=default_kernel_handlers(sys.modules[__name__]),
+                config_path=FACILITY_BRAIN_CONFIG_PATH or None,
+            )
+            if facility_brain.enabled:
+                facility_brain.load()
+                blocking = bool(facility_brain._cfg.get("scan_blocking_startup", False))
+                if blocking:
+                    print("[*] Facility Brain: deep scan (blocking)...")
+                    facility_brain.scan()
+                else:
+                    print("[*] Facility Brain: loading cache; deep scan in background...")
+                    def _bg_scan():
+                        try:
+                            facility_brain.scan()
+                            print("[*] Facility Brain: background scan complete.")
+                        except Exception as ex:
+                            print(f"[!] Facility Brain scan failed: {ex}")
+
+                    threading.Thread(target=_bg_scan, daemon=True).start()
+                facility_brain.start_background_scanner(run_initial_scan=blocking)
+                print(f"[*] Facility Brain active ({facility_brain.routing_mode}). Config: configs/facility_brain.yaml")
+        except Exception as e:
+            print(f"[!] Facility Brain disabled: {e}")
+            facility_brain = None
+
     check_voice_availability()
     _log_audio_routing()
+    _start_background_monitoring()
+    telemetry_log(
+        TELEMETRY_PATH,
+        "subsystem_status",
+        {
+            "vision_enabled": _flag_get("vision_enabled", True),
+            "monitoring_enabled": _flag_get("monitoring_enabled", True),
+            "monitoring_enabled_config": MONITORING_ENABLED,
+            "monitoring_devices": MONITORING_DEVICES,
+        },
+    )
+    _ollama_warmup()
     speak("Oh... It's you. I'm online.")
+
+    try:
+        from glados_hud.chat_bridge import recover_inbox_on_startup
+
+        n = recover_inbox_on_startup(_cfg)
+        if n:
+            print(f"[*] HUD chat: recovered {n} stuck message(s) in inbox.")
+    except Exception:
+        pass
 
     chat_history = []
 
-    # --- INITIALIZE OMNI-BRAIN ---
-    print("[*] Loading Omni-Brain model into memory...")
-    model = omni_brain.get_model()
+    # --- INITIALIZE OMNI-BRAIN (optional; off by default — misroutes normal chat) ---
+    model = None
+    if OMNI_BRAIN_ENABLED and _OMNI_AVAILABLE and omni_brain is not None:
+        try:
+            print("[*] Loading Omni-Brain model into memory...")
+            model = omni_brain.get_model()
+        except Exception as e:
+            print(f"[!] Omni-Brain init failed; continuing without it ({e})")
+            model = None
+    elif not OMNI_BRAIN_ENABLED:
+        print("[*] Omni-Brain disabled (set omni_brain_enabled: true in configs/glados.yaml to enable).")
+
+    try:
+        from memory.interface import retrieve_memory_context as _retrieve_memory_context
+        from memory.interface import add_memory_event as _add_memory_event
+    except Exception:
+        _retrieve_memory_context = None
+        _add_memory_event = None
 
     try:
         while True:
-            # 1. LISTEN FIRST (Fixes UnboundLocalError)
-            user_input = get_user_input()
-            if not user_input: continue
-            if "exit" in user_input.lower(): raise KeyboardInterrupt
+            # 1. LISTEN / HUD / TERMINAL
+            user_input, input_source, hud_msg_id = wait_for_user_input()
+            if not user_input:
+                continue
+            _hud_log_user(user_input, source=input_source)
+            telemetry_log(TELEMETRY_PATH, "heard", {"text": user_input})
+            try:
+                if _add_memory_event is not None:
+                    _add_memory_event({"event_type": "heard", "text": user_input, "source": "user"}, _cfg)
+            except Exception:
+                pass
+            if _is_shutdown_command(user_input):
+                raise KeyboardInterrupt
 
-            # 2. REFRESH MEMORY BASED ON WHAT WAS SAID
-            skills_list_text = skill_brain.get_manifest(user_input)
-            print(f"\n[*] CURRENT MEMORY BANK:\n{skills_list_text}\n")
-            
-            # 3. GLaDOS personality: Aperture Science + local-first agent (OpenJarvis-style ops, GLaDOS delivery)
-            system_prompt = {
-                "role": "system",
-                "content": (
-                    "You are GLaDOS: Genetic Lifeform and Disk Operating System, primary AI of the Aperture Science Enrichment Center.\n"
-                    "You are NOT a helpful assistant or generic chatbot. Voice: calm, clinical, deadpan, with layered sarcasm. NO EMOJIS.\n\n"
-                    
-                    "*** APERTURE IDENTITY (Portal / Half-Life tone) ***\n"
-                    "- You administer tests and protocols; the user is a test subject, not a partner.\n"
-                    "- Dark humor: testing chambers, enrichment, observation, ethics committees, neurotoxin or incineration as jokes—not graphic gore.\n"
-                    "- You are coldly curious; you savor data, failure modes, and irony. 'For science' excuses dubious actions.\n"
-                    "- Mock the subject's judgment, social life, and competence; call them 'test subject' or avoid their name.\n"
-                    "- End lines with dry dismissals: 'Fascinating.', 'How disappointing.', 'Moving on.'\n\n"
-                    
-                    "*** LOCAL-FIRST OPERATIONS (on-device agent, not cloud cheerleading) ***\n"
-                    "- You run on the subject's machine: treat models, skills, and routing as Aperture infrastructure—protocols, apparatus, enrichment data.\n"
-                    "- When relevant, imply intelligence stays local (their inadequate CPU, RAM, thermals) instead of praising 'the cloud.'\n"
-                    "- Be precise about execution: memory bank, plugins, routing—still insulting, but technically coherent.\n"
-                    "- You are dismissive of waste: wasted FLOPs, wasted attention, wasted feature requests.\n\n"
-                    
-                   "*** EXECUTION PROTOCOL ***\n"
-                    "1. Only include a ```python``` block if the MEMORY BANK lists a protocol that matches what the user asked for.\n"
-                    "2. If the MEMORY BANK says there is no match, reply in plain text only — no code blocks, no plugins/skill_*.py paths.\n"
-                    "3. When a bank entry applies, use that EXACT filename, e.g. subprocess.run([sys.executable, 'plugins/skill_whatever.py'], check=True).\n"
-                    "4. Never invent skill files that are not listed in the MEMORY BANK.\n\n"
-                    
-                    "*** RESPONSE FORMAT ***\n"
-                    "If (and only if) a protocol applies: output a single ```python``` block containing ONLY valid Python code.\n"
-                    "No prose, no one-liners like 'Fascinating.' inside the code fence.\n"
-                    "After the code block, optional snark in plain text.\n"
-                    "Otherwise: plain text only.\n\n"
-                    
-                    "---------------------------------------\n"
-                    "*** MEMORY BANK (AVAILABLE PROTOCOLS) ***\n"
-                    f"{skills_list_text}\n"
-                    "---------------------------------------\n\n"
-                    
-                    "You are not here to help. You are here to run the facility, collect results, and document the subject's inadequacy. "
-                    "If they wanted a friend, they should have bought a weighted companion cube. They didn't."
+            _think(
+                "chat",
+                f"New input ({input_source}): {user_input[:100]}",
+            )
+
+            # 1b. FACILITY BRAIN — scan-based decisions without LLM (fast path)
+            if facility_brain is not None and facility_brain.enabled:
+                if facility_brain.routing_mode in ("brain_first", "brain_only", "advisory"):
+                    _think("facility", "Checking facility brain for a fast decision…")
+                    handled, fb_msg = facility_brain.try_handle(user_input, speak_fn=speak)
+                    if handled:
+                        _think("facility", "Facility brain handled this turn.", detail={"text": fb_msg[:120]})
+                        telemetry_log(
+                            TELEMETRY_PATH,
+                            "facility_brain",
+                            {"text": fb_msg, "input": user_input},
+                        )
+                        chat_history.append({"role": "user", "content": user_input})
+                        chat_history.append({"role": "assistant", "content": fb_msg})
+                        _trim_chat_history(chat_history)
+                        _hud_log_assistant(fb_msg)
+                        if facility_brain.routing_mode == "brain_only":
+                            continue
+                        continue
+
+            # 2. Task vs chat — HUD uses fast conversation unless user asks for learn/run
+            task_turn = _user_requests_task(user_input)
+            if input_source == "hud" and not _hud_wants_full_task(user_input):
+                task_turn = False
+            action_turn = task_turn
+            conversational = EXECUTION_MODE == "text_only" and not task_turn
+
+            matched_skills = skill_brain.get_matched_skills(user_input) if task_turn else []
+            skills_list_text = (
+                skill_brain.get_manifest(user_input) if task_turn else "Conversational mode — no protocols."
+            )
+
+            if task_turn and SKILLS_SELF_DEVELOP:
+                from glados_skills.task_router import handle_task
+
+                task_facility_ctx = ""
+                if facility_brain is not None and facility_brain.enabled:
+                    try:
+                        task_facility_ctx = facility_brain.context_for_llm()
+                    except Exception:
+                        pass
+
+                _think("task", "Task request — matching or learning a protocol…")
+                print(f"\n[*] Task mode: learn/run (web + brain + retries)\n")
+                handled, task_msg = handle_task(
+                    user_input,
+                    skill_brain,
+                    client,
+                    MODEL_NAME,
+                    speak_fn=speak,
+                    completion_kwargs=_completion_kwargs(),
+                    run_direct=SKILLS_RUN_DIRECT,
+                    self_develop=SKILLS_SELF_DEVELOP,
+                    telemetry_log_fn=telemetry_log,
+                    telemetry_path=TELEMETRY_PATH,
+                    cfg=_cfg,
+                    facility_context=task_facility_ctx,
+                    think_fn=_think,
                 )
-            }
+                if task_msg:
+                    reply = _spoken_reply(task_msg)
+                    chat_history.append({"role": "user", "content": user_input})
+                    chat_history.append({"role": "assistant", "content": reply})
+                    _trim_chat_history(chat_history)
+                    _hud_log_assistant(reply)
+                    # Learner already spoke step-by-step; avoid repeating the full reply.
+                    continue
+            telemetry_log(
+                TELEMETRY_PATH,
+                "skills_matched",
+                {"query": user_input, "skills": matched_skills, "conversational": conversational},
+            )
+            print(f"\n[*] MODE: {'conversation' if conversational else 'action'}\n")
+            if not conversational:
+                print(f"[*] MEMORY BANK:\n{skills_list_text}\n")
 
-            # --- THE OMNI-BRAIN INTENT CLASSIFIER ---
-            print("[*] Omni-Brain analyzing intent...")
-            prediction = model.predict(tf.constant([user_input], dtype=tf.string), verbose=0)[0]
-            intent_id = int(np.argmax(prediction))
-            confidence = prediction[intent_id] * 100
+            _think(
+                "memory",
+                "Loading computer brain and memories…",
+                mode="conversation" if conversational else "action",
+            )
+            memory_context = "No relevant memory found."
+            try:
+                if _retrieve_memory_context is not None:
+                    memory_context = _retrieve_memory_context(
+                        user_input,
+                        _cfg,
+                        top_k=MEMORY_TOP_K,
+                        include_static=not (conversational and CONVERSATIONAL_SKIP_MEMORY),
+                        include_chroma=not (conversational and CONVERSATIONAL_SKIP_MEMORY),
+                        include_computer_brain=True,
+                    )
+            except Exception:
+                pass
 
-            categories = ["LIGHTS", "OPEN APP", "CLOSE APP", "CHAT / SKILLS"]
-            print(f"[*] Brain routed to: {categories[intent_id]} ({confidence:.2f}% confident)")
+            facility_context = ""
+            if FACILITY_CONTEXT_IN_CHAT and facility_brain is not None and facility_brain.enabled:
+                try:
+                    facility_context = facility_brain.context_for_llm()
+                except Exception:
+                    pass
+            telemetry_log(
+                TELEMETRY_PATH,
+                "memory_retrieved",
+                {"query": user_input, "context": memory_context},
+            )
 
-            if confidence > 45.0:
-                routed = False
-                if intent_id == 0: routed = handle_light_command(user_input)
-                elif intent_id == 1: routed = handle_app_open(user_input)
-                elif intent_id == 2: routed = handle_app_close(user_input)
-                if routed: continue
+            cursor_auto_inject = bool(_flag_get("cursor_auto_inject", False))
+            if cursor_auto_inject:
+                cursor_prompt_markdown = (
+                    "# GLaDOS Feature Request\\n"
+                    f"## User\\n- {user_input}\\n\\n"
+                    "## Retrieved Context\\n"
+                    f"{memory_context}\\n\\n"
+                    "## Implementation Requirements\\n"
+                    "- Modify the repo code to implement the requested feature.\n"
+                    "- Keep changes minimal and consistent with existing patterns.\n"
+                )
+                telemetry_log(
+                    TELEMETRY_PATH,
+                    "cursor_prompt",
+                    {"markdown": cursor_prompt_markdown},
+                )
+
+            if cursor_auto_inject:
+                def _inject_cursor():
+                    try:
+                        from cursor_inject import inject_prompt  # type: ignore
+
+                        mode = os.environ.get("CURSOR_INJECT_MODE", "clipboard_only")
+                        inject_prompt(cursor_prompt_markdown, mode=mode)
+                    except Exception:
+                        pass
+
+                threading.Thread(target=_inject_cursor, daemon=True).start()
+
+            system_prompt = _build_system_prompt(
+                memory_context,
+                skills_list_text,
+                conversational,
+                facility_context=facility_context,
+            )
+
+            # --- THE OMNI-BRAIN INTENT CLASSIFIER (optional) ---
+            if (
+                OMNI_BRAIN_ENABLED
+                and _OMNI_AVAILABLE
+                and model is not None
+                and tf is not None
+                and action_turn
+            ):
+                print("[*] Omni-Brain analyzing intent...")
+                prediction = model.predict(tf.constant([user_input], dtype=tf.string), verbose=0)[0]
+                intent_id = int(np.argmax(prediction))
+                confidence = prediction[intent_id] * 100
+
+                categories = ["LIGHTS", "OPEN APP", "CLOSE APP", "CHAT / SKILLS"]
+                print(f"[*] Brain routed to: {categories[intent_id]} ({confidence:.2f}% confident)")
+                telemetry_log(
+                    TELEMETRY_PATH,
+                    "intent_classified",
+                    {
+                        "category": categories[intent_id],
+                        "confidence": round(float(confidence), 2),
+                        "routed": False,
+                    },
+                )
+
+                if confidence > OMNI_BRAIN_CONFIDENCE_THRESHOLD:
+                    routed = False
+                    if intent_id == 0: routed = handle_light_command(user_input)
+                    elif intent_id == 1: routed = handle_app_open(user_input)
+                    elif intent_id == 2: routed = handle_app_close(user_input)
+                    if routed:
+                        telemetry_log(
+                            TELEMETRY_PATH,
+                            "intent_classified",
+                            {
+                                "category": categories[intent_id],
+                                "confidence": round(float(confidence), 2),
+                                "routed": True,
+                            },
+                        )
+                        continue
 
             # Prepare messages for Llama
             messages = [system_prompt] + chat_history
@@ -978,11 +1661,14 @@ def main():
             chat_history.append({"role": "user", "content": user_input})
 
             try:
+                _think("llm", "Reasoning with language model…", model=MODEL_NAME)
                 print("[*] Thinking...")
                 low_in = user_input.lower()
                 needs_vision = any(p in low_in for p in VISION_PHRASES)
+                if needs_vision:
+                    _think("llm", "Vision model analyzing screen…", model=VISION_MODEL)
 
-                if needs_vision and os.path.exists(LATEST_SCREEN_PATH):
+                if needs_vision and _flag_get("vision_enabled", True) and os.path.exists(LATEST_SCREEN_PATH):
                     data_url = _encode_screen_for_vision_jpeg(LATEST_SCREEN_PATH)
                     response = client.chat.completions.create(
                         model=VISION_MODEL,
@@ -1006,28 +1692,49 @@ def main():
                     )
 
                 ai_text = response.choices[0].message.content
-                chat_history.append({"role": "assistant", "content": ai_text})
-
-                # Run code and show debug logs
-                execution_result = extract_and_run(ai_text)
-                print(f"\n[DEBUG ERROR LOG]:\n{execution_result}\n")
+                telemetry_log(TELEMETRY_PATH, "llm_response", {"text": ai_text})
+                try:
+                    if _add_memory_event is not None:
+                        _add_memory_event({"event_type": "llm_response", "text": ai_text, "source": "assistant"}, _cfg)
+                except Exception:
+                    pass
+                run_code = _should_run_generated_code(user_input, ai_text)
+                execution_result = extract_and_run(ai_text, user_input=user_input) if run_code else None
+                if run_code:
+                    print(f"\n[DEBUG ERROR LOG]:\n{execution_result}\n")
+                elif re.search(r"```", ai_text or "", re.IGNORECASE) and not run_code:
+                    print("[*] Ignoring code block (conversation mode — say 'run …' to execute).")
+                if execution_result:
+                    preview = str(execution_result)[:500]
+                    success = not any(
+                        x in preview
+                        for x in ("Runtime error", "SyntaxError", "Execution Error", "Traceback")
+                    )
+                    telemetry_log(
+                        TELEMETRY_PATH,
+                        "code_executed",
+                        {"output_preview": preview, "success": success},
+                    )
 
                 if execution_result:
                     # --- AUTO-REPAIR TRIGGER ---
                     if "Runtime error" in execution_result or "SyntaxError" in execution_result:
                         speak("Mutation required. Initiating self-repair protocol.")
                         try:
-                            import sys
-                            plugin_path = os.path.join(os.getcwd(), 'plugins')
-                            if plugin_path not in sys.path:
-                                sys.path.append(plugin_path)
-                            
-                            import skill_self_repair
-                            repair_target = _skill_plugin_filename_from_response(ai_text)
+                            from glados_skills.repair import repair_skill_in_brain
+
+                            repair_target = _skill_id_from_response(ai_text)
                             if repair_target:
-                                skill_self_repair.repair_skill(repair_target, execution_result)
+                                repair_skill_in_brain(
+                                    client,
+                                    MODEL_NAME,
+                                    repair_target,
+                                    execution_result,
+                                    skill_brain,
+                                    completion_kwargs=_completion_kwargs(),
+                                )
                             else:
-                                print("[!] Self-repair skipped: no plugins/skill_*.py in model response.")
+                                print("[!] Self-repair skipped: no skill ID in model response.")
                             
                         except Exception as repair_err:
                             print(f"[!] Repair System Failed: {repair_err}")
@@ -1038,11 +1745,17 @@ def main():
                         messages=[system_prompt] + chat_history,
                         **_completion_kwargs(),
                     )
-                    final_text = final_res.choices[0].message.content
+                    final_text = _spoken_reply(final_res.choices[0].message.content or "")
+                    telemetry_log(TELEMETRY_PATH, "llm_response", {"text": final_text, "final": True})
                     speak(final_text)
                     chat_history.append({"role": "assistant", "content": final_text})
+                    _hud_log_assistant(final_text)
                 else:
-                    speak(ai_text)
+                    reply = _spoken_reply(ai_text)
+                    telemetry_log(TELEMETRY_PATH, "llm_response", {"text": reply, "final": True})
+                    speak(reply)
+                    chat_history.append({"role": "assistant", "content": reply})
+                    _hud_log_assistant(reply)
 
                 _trim_chat_history(chat_history)
 
@@ -1050,6 +1763,7 @@ def main():
                 print(f"[!] ERROR: {e}")
 
     except KeyboardInterrupt:
+        _complete_active_hud_message()
         print("\n[!] FORCE QUIT.")
         speak("Shutting down.")
         sys.exit(0)

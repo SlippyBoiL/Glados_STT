@@ -1,0 +1,70 @@
+# Glados — local-first defaults (pattern: OpenJarvis-style single config + env overrides).
+# Docs: https://github.com/open-jarvis/OpenJarvis  |  Env vars still win if set.
+#
+# model_name / vision_model must match `ollama list` exactly (case-sensitive). Example:
+#   ollama pull llama3.2-vision
+
+# Same machine as Glados (GPU usage shows on this PC in Task Manager / nvidia-smi)
+ollama_base_url: "http://127.0.0.1:11434/v1"
+# Llama 3.2 Vision — use for normal chat and for screen/vision turns
+model_name: "llama3.2-vision"
+vision_model: "llama3.2-vision"
+
+# Piper TTS (paths relative to repo root ok)
+piper_model_path: "glados.onnx"
+piper_output_wav: "local_glados_response.wav"
+# Optional: if `piper` is not on PATH, set an explicit executable path.
+# Example: "C:/tools/piper/piper.exe"
+piper_exe_path: ""
+
+# Wake-word + local STT (Phase 1)
+# - wake_word_engine:
+#     - porcupine: use Picovoice Porcupine locally
+# - porcupine_keywords:
+#     - built-in keyword names (e.g. "hey computer") or custom keyword files
+# - stt_engine:
+#     - faster_whisper: local Whisper transcription
+wake_word_engine: "porcupine"
+porcupine_keywords: ["hey glados"]
+stt_engine: "faster_whisper"
+whisper_model: "base.en"
+whisper_compute_type: "int8"
+whisper_language: "en"
+wake_cooldown_sec: 1.5
+mic_sample_rate: 16000
+mic_channels: 1
+pre_roll_ms: 500
+utterance_max_sec: 10
+
+# Memory (Phase 0: static JSON facts + optional ChromaDB)
+memory_enable_chroma: false
+chroma_persist_dir: "chroma_db"
+chroma_collection: "glados_memories"
+embedding_backend: "ollama"
+embedding_model: "nomic-embed-text"
+
+# Elgato Wave Link: substring match for device names
+audio_output_match: "Wave Link"
+audio_input_match: "Wave Link"
+
+plugins_dir: "plugins"
+
+# Input mode:
+# - voice: wake word + microphone (default)
+# - text: type into the terminal
+# - hybrid: type, or press Enter to use voice
+input_mode: "hybrid"
+
+# Background monitoring (SSH)
+monitoring_enabled: true
+monitoring_interval_sec: 300
+monitoring_devices: ["pihole", "twingate"]
+
+# --- Speed (Ollama uses GPU on the machine running ollama serve — this config targets localhost)
+llm_max_tokens: 512
+chat_history_max_messages: 24
+screen_capture_max_edge: 960
+vision_jpeg_max_edge: 896
+vision_jpeg_quality: 78
+# Optional: keeps model loaded between requests (newer Ollama + OpenAI API). Uncomment if supported:
+# ollama_keep_alive: "15m"

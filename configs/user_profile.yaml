@@ -1,0 +1,11 @@
+# Who Glados is serving — merged into Facility Brain scans (edit anytime).
+# This is NOT sent online unless you ask her to search the web.
+
+display_name: "SlippyToad"
+about: "I am a Human, but my name is never to be known, and I am a software engineer. I am a developer of the GLaDOS kernel. I am also a fan of the Portal series. I like to debug plenty of things with Ai"
+preferred_browser: firefox   # chrome | edge | firefox | default
+timezone_note: "I am in the United States of America, and I am in the Eastern Time Zone."
+
+# Apps, hobbies, servers — anything you want her to remember about you
+facts:
+  - "Primary operator of this PC. Work at Disney in ODV DHS."

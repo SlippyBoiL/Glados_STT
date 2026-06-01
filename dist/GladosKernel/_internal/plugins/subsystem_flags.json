@@ -1,0 +1,8 @@
+{
+  "vision_enabled": true,
+  "monitoring_enabled": true,
+  "cursor_auto_inject": false,
+  "dashboard_url": "http://localhost:8501",
+  "streamlit_port": 8501
+}
+

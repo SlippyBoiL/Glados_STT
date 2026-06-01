@@ -6,13 +6,97 @@
 
 # Same machine as Glados (GPU usage shows on this PC in Task Manager / nvidia-smi)
 ollama_base_url: "http://127.0.0.1:11434/v1"
-# Llama 3.2 Vision — use for normal chat and for screen/vision turns
-model_name: "llama3.2-vision"
+
+# --- Models (names must match `ollama list` exactly) ---
+# Fast chat on weak hardware (recommended):  ollama pull llama3.2:1b
+# Heavier / smarter:                         ollama pull llama3.2
+# Vision (screen only, slow):                ollama pull llama3.2-vision
+model_name: "llama3.2:1b"
 vision_model: "llama3.2-vision"
+
+# text_only = normal conversation, no auto-running Python (say "run …" / "open …" to act)
+# auto = legacy behavior (runs code whenever the model emits a code block)
+execution_mode: "text_only"
+omni_brain_enabled: false
+omni_brain_confidence_threshold: 72
+memory_top_k: 2
+
+# Facility Brain — full PC scan + fast decisions (customize configs/facility_brain.yaml)
+facility_brain_enabled: true
+
+# Skills — ONE brain file; Glados learns protocols herself (no plugins/skill_*.py)
+skills_brain_path: "data/glados_skills_brain.json"
+skills_self_develop: true
+skills_conversational_learn: true
+# Keep trying until it works — no attempt limit (set skills_learn_unlimited_attempts: false to cap)
+skills_learn_until_success: true
+skills_learn_unlimited_attempts: true
+skills_learn_safety_cap: 0
+skills_learn_max_attempts: 0
+skills_learn_use_web: true
+skills_learn_open_browser: true
+skills_learn_reuse_browser: true
+skills_learn_pause_sec: 2.0
+skills_learn_step_pause_sec: 6.0
+# Browser AI (logged-in Gemini + Perplexity in data/glados_browser_profile) — no API keys
+skills_learn_use_browser_ai: true
+skills_learn_skip_search_tabs: true
+skills_learn_browser_sites:
+  - gemini
+  - perplexity
+skills_learn_browser_wait_sec: 180
+skills_learn_browser_poll_sec: 4.0
+skills_learn_browser_load_sec: 14.0
+skills_learn_browser_after_nav_sec: 3.0
+skills_learn_browser_type_delay_sec: 1.5
+skills_learn_browser_after_type_sec: 2.5
+skills_learn_browser_before_submit_sec: 2.0
+skills_learn_browser_cycle_pause_sec: 10.0
+skills_learn_browser_settle_polls: 4
+# Real keyboard/mouse control when CDP cannot type into Gemini/Perplexity
+skills_learn_browser_desktop_admin: true
+skills_learn_browser_desktop_first: true
+skills_learn_skip_browser_for_direct: true
+# API advisors (off by default — use browser instead)
+skills_learn_use_ai_council: false
+gemini_model: "gemini-2.0-flash"
+skills_learn_use_openai_advisor: false
+openai_advisor_model: "gpt-4o-mini"
+skills_auto_learn_on_success: false
+skills_run_direct: true
 
 # Piper TTS (paths relative to repo root ok)
 piper_model_path: "glados.onnx"
 piper_output_wav: "local_glados_response.wav"
+# Optional: if `piper` is not on PATH, set an explicit executable path.
+# Example: "C:/tools/piper/piper.exe"
+piper_exe_path: ""
+
+# Wake-word + local STT (Phase 1)
+# - wake_word_engine:
+#     - porcupine: use Picovoice Porcupine locally
+# - porcupine_keywords:
+#     - built-in keyword names (e.g. "hey computer") or custom keyword files
+# - stt_engine:
+#     - faster_whisper: local Whisper transcription
+wake_word_engine: "porcupine"
+porcupine_keywords: ["hey glados"]
+stt_engine: "faster_whisper"
+whisper_model: "tiny.en"
+whisper_compute_type: "int8"
+whisper_language: "en"
+wake_cooldown_sec: 1.5
+mic_sample_rate: 16000
+mic_channels: 1
+pre_roll_ms: 500
+utterance_max_sec: 10
+
+# Memory (Phase 0: static JSON facts + optional ChromaDB)
+memory_enable_chroma: false
+chroma_persist_dir: "chroma_db"
+chroma_collection: "glados_memories"
+embedding_backend: "ollama"
+embedding_model: "nomic-embed-text"
 
 # Elgato Wave Link: substring match for device names
 audio_output_match: "Wave Link"
@@ -26,11 +110,31 @@ plugins_dir: "plugins"
 # - hybrid: type, or press Enter to use voice
 input_mode: "hybrid"
 
+# Background monitoring (SSH)
+monitoring_enabled: true
+monitoring_interval_sec: 300
+monitoring_devices: ["pihole", "twingate"]
+
 # --- Speed (Ollama uses GPU on the machine running ollama serve — this config targets localhost)
-llm_max_tokens: 512
-chat_history_max_messages: 24
+llm_max_tokens: 128
+chat_history_max_messages: 6
+ollama_keep_alive: "30m"
+llm_warmup_on_start: true
+conversational_skip_memory: true
+# Computer scan facts go to data/computer_brain_memory.json (memory system). Set false to avoid duplicate prompt block.
+facility_context_in_chat: false
+tts_async: true
+# Set false to hear Piper voice (slower — waits for audio before next turn if async is false)
+tts_enabled: true
 screen_capture_max_edge: 960
 vision_jpeg_max_edge: 896
 vision_jpeg_quality: 78
-# Optional: keeps model loaded between requests (newer Ollama + OpenAI API). Uncomment if supported:
-# ollama_keep_alive: "15m"
+
+# Brain dashboard (FastAPI API + web UI on LAN)
+# Set brain_dashboard_url to your PC LAN IP for phone access, e.g. http://192.168.1.50:8080
+# Windows Firewall: allow inbound TCP on brain_dashboard_port (Private network only).
+brain_dashboard_enabled: true
+brain_dashboard_host: "0.0.0.0"
+brain_dashboard_port: 8080
+brain_dashboard_url: "http://localhost:8080"
+brain_dashboard_token: ""
