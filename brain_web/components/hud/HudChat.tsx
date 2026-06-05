@@ -93,27 +93,6 @@ export function HudChat({ events }: { events: TelemetryEvent[] }) {
   const [apiOk, setApiOk] = useState<boolean | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // #region agent log
-  const dbg = useCallback(
-    (hypothesisId: string, location: string, message: string, data: Record<string, unknown> = {}) => {
-      fetch("http://127.0.0.1:7588/ingest/154ba983-314e-48b7-bd5a-bb624e621024", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "514799" },
-        body: JSON.stringify({
-          sessionId: "514799",
-          runId: "pre-fix",
-          hypothesisId,
-          location,
-          message,
-          data,
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-    },
-    [],
-  );
-  // #endregion agent log
-
   const liveFromWs = useMemo(() => telemetryToMessages(events), [events]);
   const messages = useMemo(
     () => mergeMessages(history, liveFromWs),
@@ -155,7 +134,6 @@ export function HudChat({ events }: { events: TelemetryEvent[] }) {
   async function onSend(e: React.FormEvent) {
     e.preventDefault();
     const text = draft.trim();
-    dbg("H4", "HudChat.tsx:onSend", "onSend called", { hasText: Boolean(text), sending });
     if (!text || sending) return;
     setSending(true);
     setError(null);
@@ -169,18 +147,14 @@ export function HudChat({ events }: { events: TelemetryEvent[] }) {
     };
     setHistory((prev) => [...prev, optimistic]);
     try {
-      dbg("H4", "HudChat.tsx:onSend", "calling api.chatSend", { textLen: text.length });
       await api.chatSend(text);
-      dbg("H4", "HudChat.tsx:onSend", "api.chatSend resolved", {});
       // Do not await history refresh — a slow/hung poll left sending=true and blocked the second HUD message.
       void refreshHistory().catch(() => {});
     } catch {
-      dbg("H4", "HudChat.tsx:onSend", "api.chatSend failed", {});
       setError("Send failed — is the brain API running on port 8080?");
       setDraft(text);
       setHistory((prev) => prev.filter((m) => m.id !== optimistic.id));
     } finally {
-      dbg("H4", "HudChat.tsx:onSend", "onSend finally", { sending: false });
       setSending(false);
     }
   }

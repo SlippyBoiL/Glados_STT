@@ -25,7 +25,6 @@ def _inbox_exclusive(path: str) -> Iterator[None]:
         except FileExistsError:
             time.sleep(0.01)
     else:
-        _dbg("H1", "glados_hud/chat_bridge.py:_inbox_exclusive", "lock timeout", {"path": path})
         raise TimeoutError(f"inbox lock timeout: {path}")
     try:
         with _lock:
@@ -40,27 +39,6 @@ def _inbox_exclusive(path: str) -> Iterator[None]:
             os.unlink(lock_path)
         except OSError:
             pass
-
-# region agent log
-def _dbg(hypothesisId: str, location: str, message: str, data: Optional[Dict[str, Any]] = None) -> None:
-    try:
-        from glados_paths import REPO_ROOT
-
-        payload = {
-            "sessionId": "514799",
-            "runId": "pre-fix",
-            "hypothesisId": hypothesisId,
-            "location": location,
-            "message": message,
-            "data": data or {},
-            "timestamp": int(time.time() * 1000),
-        }
-        p = os.path.join(REPO_ROOT, "debug-514799.log")
-        with open(p, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-# endregion agent log
 
 
 def _plugins_dir(cfg: Optional[Dict[str, Any]] = None) -> str:
@@ -78,12 +56,6 @@ def history_path(cfg: Optional[Dict[str, Any]] = None) -> str:
 def enqueue_user_message(text: str, cfg: Optional[Dict[str, Any]] = None) -> str:
     """HUD → kernel: queue a message for Glados to process."""
     msg_id = str(uuid.uuid4())[:12]
-    _dbg(
-        "H1",
-        "glados_hud/chat_bridge.py:enqueue_user_message",
-        "enqueue called",
-        {"msg_id": msg_id, "text_len": len((text or "").strip()), "plugins_dir": _plugins_dir(cfg)},
-    )
     line = {
         "id": msg_id,
         "role": "user",
@@ -95,14 +67,12 @@ def enqueue_user_message(text: str, cfg: Optional[Dict[str, Any]] = None) -> str
     if not line["text"]:
         return ""
     path = inbox_path(cfg)
-    _dbg("H1", "glados_hud/chat_bridge.py:enqueue_user_message", "inbox_path resolved", {"path": path})
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with _inbox_exclusive(path):
         _release_stuck_processing(path, max_age_sec=15.0)
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(line, ensure_ascii=False) + "\n")
         _append_history_unlocked(line, cfg)
-    _dbg("H1", "glados_hud/chat_bridge.py:enqueue_user_message", "enqueue wrote message", {"msg_id": msg_id})
     return msg_id
 
 
@@ -134,13 +104,6 @@ def _release_stuck_processing(path: str, *, max_age_sec: float = 15.0) -> int:
         with open(path, "w", encoding="utf-8") as f:
             for ln in out:
                 f.write(ln + "\n")
-    if n:
-        _dbg(
-            "H3",
-            "glados_hud/chat_bridge.py:_release_stuck_processing",
-            "released stuck processing rows",
-            {"count": n, "path": path},
-        )
     return n
 
 
@@ -151,7 +114,6 @@ def recover_inbox_on_startup(cfg: Optional[Dict[str, Any]] = None) -> int:
         return 0
     n = 0
     with _inbox_exclusive(path):
-        _dbg("H3", "glados_hud/chat_bridge.py:recover_inbox_on_startup", "recover start", {"path": path})
         try:
             with open(path, "r", encoding="utf-8") as f:
                 lines = [ln.strip() for ln in f.readlines() if ln.strip()]
@@ -171,7 +133,6 @@ def recover_inbox_on_startup(cfg: Optional[Dict[str, Any]] = None) -> int:
         with open(path, "w", encoding="utf-8") as f:
             for ln in out:
                 f.write(ln + "\n")
-    _dbg("H3", "glados_hud/chat_bridge.py:recover_inbox_on_startup", "recover end", {"count_reset": n})
     return n
 
 
@@ -182,7 +143,6 @@ def mark_message_done(msg_id: str, cfg: Optional[Dict[str, Any]] = None) -> None
     if not os.path.isfile(path):
         return
     with _inbox_exclusive(path):
-        _dbg("H2", "glados_hud/chat_bridge.py:mark_message_done", "mark start", {"msg_id": msg_id, "path": path})
         try:
             with open(path, "r", encoding="utf-8") as f:
                 lines = [ln.strip() for ln in f.readlines() if ln.strip()]
@@ -203,7 +163,6 @@ def mark_message_done(msg_id: str, cfg: Optional[Dict[str, Any]] = None) -> None
         with open(path, "w", encoding="utf-8") as f:
             for ln in out:
                 f.write(ln + "\n")
-    _dbg("H2", "glados_hud/chat_bridge.py:mark_message_done", "mark end", {"msg_id": msg_id})
 
 
 def pop_pending_message(
@@ -218,7 +177,6 @@ def pop_pending_message(
     now = time.time()
     with _inbox_exclusive(path):
         _release_stuck_processing(path, max_age_sec=15.0)
-        _dbg("H1", "glados_hud/chat_bridge.py:pop_pending_message", "pop start", {"path": path, "now": now})
         try:
             with open(path, "r", encoding="utf-8") as f:
                 lines = [ln.strip() for ln in f.readlines() if ln.strip()]
@@ -248,16 +206,6 @@ def pop_pending_message(
                     break
 
         if pick_idx is None:
-            if objs:
-                _dbg(
-                    "H3",
-                    "glados_hud/chat_bridge.py:pop_pending_message",
-                    "pop blocked",
-                    {
-                        "count": len(objs),
-                        "statuses": [str(o.get("status")) for o in objs if o.get("role") == "user"],
-                    },
-                )
             return None, None
 
         chosen = objs[pick_idx]
@@ -265,12 +213,6 @@ def pop_pending_message(
         chosen["ts"] = now
         text = str(chosen.get("text") or "").strip()
         msg_id = str(chosen.get("id") or "")
-        _dbg(
-            "H3",
-            "glados_hud/chat_bridge.py:pop_pending_message",
-            "picked message",
-            {"pick_idx": pick_idx, "msg_id": msg_id, "text_len": len(text), "status": chosen.get("status")},
-        )
         remaining: List[str] = []
         for j, obj in enumerate(objs):
             if j == pick_idx:

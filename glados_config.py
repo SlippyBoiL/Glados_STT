@@ -53,6 +53,8 @@ def load_config() -> Dict[str, Any]:
         "chroma_collection": "glados_memories",
         "embedding_backend": "ollama",
         "embedding_model": "nomic-embed-text",
+        "memory_consolidation_enabled": True,
+        "memory_consolidation_min_fact_len": 10,
         # Inference speed (Ollama does GPU work on the *server* at ollama_base_url, not this PC)
         "llm_max_tokens": 512,
         "chat_history_max_messages": 24,
@@ -78,6 +80,8 @@ def load_config() -> Dict[str, Any]:
         "omni_brain_enabled": False,
         "omni_brain_confidence_threshold": 72,
         "memory_top_k": 2,
+        "memory_force_sandwich": False,
+        "os_control_enabled": False,
         # Facility Brain (separate scan + decision file — configs/facility_brain.yaml)
         "facility_brain_enabled": True,
         "facility_brain_config_path": os.path.join(REPO_ROOT, "configs", "facility_brain.yaml"),
@@ -198,6 +202,8 @@ def load_config() -> Dict[str, Any]:
     _deep_set(cfg, "skills_learn_open_browser", os.environ.get("GLADOS_SKILLS_LEARN_OPEN_BROWSER"))
     _deep_set(cfg, "llm_warmup_on_start", os.environ.get("GLADOS_LLM_WARMUP"))
     _deep_set(cfg, "conversational_skip_memory", os.environ.get("GLADOS_SKIP_MEMORY_ON_CHAT"))
+    _deep_set(cfg, "memory_force_sandwich", os.environ.get("GLADOS_MEMORY_FORCE_SANDWICH"))
+    _deep_set(cfg, "os_control_enabled", os.environ.get("GLADOS_OS_CONTROL_ENABLED"))
     _deep_set(cfg, "facility_context_in_chat", os.environ.get("GLADOS_FACILITY_CONTEXT"))
     _deep_set(cfg, "tts_async", os.environ.get("GLADOS_TTS_ASYNC"))
     _deep_set(cfg, "tts_enabled", os.environ.get("GLADOS_TTS_ENABLED"))
@@ -214,6 +220,7 @@ def load_config() -> Dict[str, Any]:
         "utterance_max_sec",
         "brain_dashboard_port",
         "memory_top_k",
+        "memory_consolidation_min_fact_len",
         "omni_brain_confidence_threshold",
     ):
         if cfg.get(key) is not None:
@@ -257,6 +264,9 @@ def load_config() -> Dict[str, Any]:
     for flag in (
         "llm_warmup_on_start",
         "conversational_skip_memory",
+        "memory_consolidation_enabled",
+        "memory_force_sandwich",
+        "os_control_enabled",
         "facility_context_in_chat",
         "tts_async",
         "tts_enabled",

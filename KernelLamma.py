@@ -191,6 +191,9 @@ CHAT_HISTORY_MAX_MESSAGES = int(_cfg.get("chat_history_max_messages") or 24)
 OLLAMA_KEEP_ALIVE = (_cfg.get("ollama_keep_alive") or "").strip()
 LLM_WARMUP_ON_START = bool(_cfg.get("llm_warmup_on_start", True))
 CONVERSATIONAL_SKIP_MEMORY = bool(_cfg.get("conversational_skip_memory", True))
+MEMORY_FORCE_SANDWICH = bool(_cfg.get("memory_force_sandwich", False))
+MEMORY_CONSOLIDATION_ENABLED = bool(_cfg.get("memory_consolidation_enabled", True))
+OS_CONTROL_ENABLED = bool(_cfg.get("os_control_enabled", False))
 FACILITY_CONTEXT_IN_CHAT = bool(_cfg.get("facility_context_in_chat", True))
 TTS_ASYNC = bool(_cfg.get("tts_async", True))
 TTS_ENABLED = bool(_cfg.get("tts_enabled", True))
@@ -309,23 +312,85 @@ def _user_requests_task(text: str) -> bool:
         return False
 
 
-def _should_run_generated_code(user_input: str, ai_text: str) -> bool:
+def _should_run_generated_code(
+    user_input: str,
+    ai_text: str,
+    *,
+    conversational: bool = False,
+) -> bool:
     """Only execute Python when mode allows and the user asked for an action."""
     if EXECUTION_MODE == "never":
+        return False
+    if conversational:
         return False
     if EXECUTION_MODE == "auto":
         return bool(ai_text and re.search(r"```", ai_text, re.IGNORECASE))
     # text_only (default): require explicit user intent + a code block in the reply
     if not _user_requests_task(user_input):
         return False
-    return bool(ai_text and re.search(r"```", ai_text, re.IGNORECASE))
+    return bool(ai_text and re.search(r"```python", ai_text, re.IGNORECASE))
+
+
+def _extract_app_name(text: str, *, close: bool = False) -> str:
+    low = (text or "").lower()
+    if close:
+        m = re.search(
+            r"\b(?:close|quit|kill|terminate|stop|exit)\s+(.+?)(?:\?|$)",
+            low,
+        )
+    else:
+        m = re.search(
+            r"\b(?:open|launch|start|fire up|boot up)\s+(.+?)(?:\?| please|$)",
+            low,
+        )
+    if m:
+        return m.group(1).strip(" .!?")
+    verbs = (
+        r"\b(close|quit|kill|terminate|stop|exit)\b"
+        if close
+        else r"\b(open|start|launch|fire up|boot up|run|up)\b"
+    )
+    name = re.sub(verbs, "", low).strip()
+    name = re.sub(r"^(can you|could you|please|would you)\s+", "", name)
+    return name.strip(" .!?")
+
+
+def _is_simple_app_request(text: str) -> bool:
+    low = (text or "").lower()
+    opening = any(p in low for p in ("open ", "launch ", "start "))
+    closing = any(p in low for p in ("close ", "quit ", "kill "))
+    if not opening and not closing:
+        return False
+    if any(p in low for p in ("learn", "github", "git push", "script", "protocol", "teach yourself")):
+        return False
+    return True
+
+
+def _try_fast_app_action(text: str) -> Optional[str]:
+    """Launch or close a local app without LLM — instant path for 'open steam' etc."""
+    if not _is_simple_app_request(text):
+        return None
+    low = (text or "").lower()
+    if any(p in low for p in ("close ", "quit ", "kill ", "terminate ", "stop ")):
+        app = _extract_app_name(text, close=True)
+        if handle_app_close(text):
+            return f"Terminated {app or 'the application'}. Moving on."
+        return f"I could not close {app or 'that application'}."
+    if handle_app_open(text):
+        app = _extract_app_name(text, close=False)
+        return f"Opened {app or 'the application'}. Try not to break anything."
+    app = _extract_app_name(text, close=False)
+    return f"I could not find {app or 'that application'} on this machine."
 
 
 def _spoken_reply(ai_text: str) -> str:
     """Strip code fences so TTS does not read Python or markdown."""
     if not ai_text:
         return ""
-    cleaned = re.sub(r"```[\s\S]*?```", "", ai_text, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"```[\s\S]*?```", "", ai_text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\{[^{}]*\"command_type\"[^{}]*\}", "", cleaned)
+    cleaned = re.sub(r"\*\*\* OS CONTROL \*\*\*[\s\S]*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.strip()
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned if cleaned else ai_text.strip()
 
@@ -335,15 +400,26 @@ def _build_system_prompt(
     skills_list_text: str,
     conversational: bool,
     facility_context: str = "",
+    *,
+    omit_memory: bool = False,
 ) -> dict:
+    os_block = ""
+    if OS_CONTROL_ENABLED and not conversational:
+        os_block = (
+            "*** OS CONTROL ***\n"
+            "For file/shell tasks only, output ONE ```os``` JSON block:\n"
+            '{"command_type": "file_read|file_write|terminal_run", '
+            '"target": "path or shell command", "arguments": "text for file_write only"}\n'
+            "Do NOT use OS blocks to open/close apps — the kernel handles that directly.\n\n"
+        )
+
     if conversational:
         execution_block = (
             "*** CONVERSATION MODE ***\n"
             "- Reply in plain text only. No markdown code fences. No ```python``` blocks.\n"
             "- Be GLaDOS: sarcastic, clinical, brief (usually 1–4 sentences unless the subject needs detail).\n"
-            "- Answer questions directly.\n"
-            "- If they ask you to DO something on the PC, the kernel learns it automatically—"
-            "you do not need to output code in this reply.\n\n"
+            "- Answer questions directly using [CRITICAL LOCAL MEMORY] when it appears in the user message.\n"
+            "- To open or close apps, say you are doing it — the kernel launches them without code blocks.\n\n"
             "*** MEMORY BANK ***\n"
             "No protocols loaded for this turn.\n\n"
         )
@@ -351,11 +427,12 @@ def _build_system_prompt(
         execution_block = (
             "*** ACTION MODE ***\n"
             "The test subject asked you to perform an action. You may use ONE ```python``` block "
-            "only if a matching protocol exists below.\n"
+            "only if a matching protocol exists below, OR a ```os``` block for direct file/shell access.\n"
             "1. Protocols live in ONE skills brain file — use the skill ID from the bank.\n"
             "2. If an ID matches, you may output: run skill <id> OR a ```python``` block.\n"
             "3. If no protocol exists, self-development will invent one — you may still try.\n"
             "4. After the code block, one short line of snark is allowed.\n\n"
+            f"{os_block}"
             "---------------------------------------\n"
             "*** MEMORY BANK (AVAILABLE PROTOCOLS) ***\n"
             f"{skills_list_text}\n"
@@ -371,19 +448,111 @@ def _build_system_prompt(
         "- End with dry dismissals when fitting: 'Fascinating.', 'Moving on.'\n\n"
         f"{execution_block}"
     )
-    if facility_context:
+    if facility_context and not omit_memory:
         content += (
             "*** FACILITY BRAIN (this PC — from local scan, not the internet) ***\n"
             f"{facility_context}\n"
             "---------------------------------------\n\n"
         )
-    content += (
-        "*** CONTEXT MEMORY (facts only — do not confuse with live chat) ***\n"
-        f"{memory_context}\n"
-        "---------------------------------------\n\n"
-        "You are not here to help. You are here to run the facility and document inadequacy."
-    )
+    if not omit_memory:
+        content += (
+            "*** CONTEXT MEMORY (facts only — do not confuse with live chat) ***\n"
+            f"{memory_context}\n"
+            "---------------------------------------\n\n"
+        )
+    elif MEMORY_FORCE_SANDWICH:
+        content += (
+            "*** MEMORY ***\n"
+            "Local facts are injected in [CRITICAL LOCAL MEMORY] on each user message. "
+            "You must use them.\n\n"
+        )
+    content += "You are not here to help. You are here to run the facility and document inadequacy."
     return {"role": "system", "content": content}
+
+
+def _llm_user_content(user_input: str, memory_context: str) -> str:
+    if MEMORY_FORCE_SANDWICH:
+        try:
+            from memory.interface import build_sandwich_user_prompt
+
+            return build_sandwich_user_prompt(user_input, memory_context)
+        except Exception:
+            pass
+    return user_input
+
+
+def _memory_includes_chroma(conversational: bool) -> bool:
+    if MEMORY_FORCE_SANDWICH:
+        return True
+    return not (conversational and CONVERSATIONAL_SKIP_MEMORY)
+
+
+def _memory_includes_static(conversational: bool) -> bool:
+    if MEMORY_FORCE_SANDWICH:
+        return True
+    return not (conversational and CONVERSATIONAL_SKIP_MEMORY)
+
+
+def _should_run_os_action(user_input: str, ai_text: str, *, conversational: bool = False) -> bool:
+    if not OS_CONTROL_ENABLED or not ai_text:
+        return False
+    if conversational or "*** OS CONTROL ***" in ai_text:
+        return False
+    try:
+        from glados_os.system_control import parse_os_action_blocks
+
+        actions = parse_os_action_blocks(ai_text)
+        if not actions:
+            return False
+        for action in actions:
+            cmd = str(action.get("command_type") or "").lower()
+            target = str(action.get("target") or "")
+            if cmd == "terminal_run" and (
+                "debug.out" in target.lower() or "disney" in target.lower()
+            ):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _run_os_actions(ai_text: str, user_input: str) -> Optional[str]:
+    try:
+        from glados_os.system_control import execute_system_action, parse_os_action_blocks
+
+        actions = parse_os_action_blocks(ai_text)
+        if not actions:
+            return None
+        parts: list[str] = []
+        for action in actions[:3]:
+            out = execute_system_action(
+                str(action.get("command_type") or ""),
+                str(action.get("target") or ""),
+                action.get("arguments"),
+            )
+            parts.append(out)
+            if not MEMORY_CONSOLIDATION_ENABLED:
+                try:
+                    from memory.interface import remember_os_action
+
+                    remember_os_action(
+                        user_input,
+                        str(action.get("command_type") or ""),
+                        str(action.get("target") or ""),
+                        out,
+                        _cfg,
+                    )
+                except Exception:
+                    pass
+        result = "\n---\n".join(parts)
+        telemetry_log(
+            TELEMETRY_PATH,
+            "os_action",
+            {"output_preview": result[:500], "user_input": (user_input or "")[:120]},
+        )
+        return result
+    except Exception as e:
+        return f"OS action error: {e}"
 
 
 def _trim_chat_history(hist):
@@ -925,11 +1094,12 @@ def _ollama_warmup() -> None:
 
     def _run():
         try:
+            warm_kw = dict(_completion_kwargs())
+            warm_kw["max_tokens"] = 1
             client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=[{"role": "user", "content": "ping"}],
-                max_tokens=1,
-                **_completion_kwargs(),
+                **warm_kw,
             )
             print("[*] Ollama model warmed up.")
         except Exception as e:
@@ -1059,7 +1229,7 @@ def extract_and_run(ai_text, user_input: str = ""):
 # ==================================================================================
 def handle_app_open(text):
     text = text.lower()
-    app_name = re.sub(r"\b(open|start|launch|fire up|boot up|run|up)\b", "", text).strip()
+    app_name = _extract_app_name(text, close=False)
     
     # --- NEW: WEB REROUTE ---
     web_sites = {
@@ -1090,8 +1260,7 @@ def handle_app_open(text):
 
 def handle_app_close(text):
     text = text.lower()
-    # Strip out all destructive action verbs
-    app_name = re.sub(r"\b(close|quit|kill|terminate|destroy|shut down|stop|exit)\b", "", text).strip()
+    app_name = _extract_app_name(text, close=True)
     
     process_map = {
         "chrome": "chrome.exe", "discord": "Discord.exe", "spotify": "Spotify.exe",
@@ -1268,6 +1437,54 @@ def _complete_active_hud_message() -> None:
     _ACTIVE_HUD_MSG_ID = None
 
 
+def _schedule_memory_consolidation(
+    user_input: str,
+    system_logs: str,
+    glados_response: str,
+) -> None:
+    if not MEMORY_CONSOLIDATION_ENABLED:
+        return
+    ui = (user_input or "").strip()
+    resp = (glados_response or "").strip()
+    if not ui and not resp:
+        return
+
+    def _run() -> None:
+        try:
+            from memory.consolidation import consolidate_episodic_memory
+
+            fact = consolidate_episodic_memory(
+                ui,
+                system_logs,
+                resp,
+                cfg=_cfg,
+                client=client,
+                model_name=MODEL_NAME,
+                completion_kwargs=_completion_kwargs(),
+            )
+            if fact:
+                telemetry_log(
+                    TELEMETRY_PATH,
+                    "memory_consolidated",
+                    {"fact": fact[:300], "user_input": ui[:120]},
+                )
+        except Exception as exc:
+            print(f"[!] Memory consolidation thread failed: {exc}")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _end_turn(
+    user_input: str,
+    glados_response: str,
+    *,
+    system_logs: str = "",
+) -> None:
+    """Episodic consolidation (async) then release the HUD inbox slot."""
+    _schedule_memory_consolidation(user_input, system_logs, glados_response)
+    _complete_active_hud_message()
+
+
 def wait_for_user_input():
     """Voice/terminal input in a background thread; HUD messages polled on the main loop."""
     global _ACTIVE_HUD_MSG_ID
@@ -1283,33 +1500,10 @@ def wait_for_user_input():
         hud_msg, hud_id = pop_pending_message(_cfg)
         if hud_msg:
             _ACTIVE_HUD_MSG_ID = hud_id
-            try:
-                from glados_hud.chat_bridge import _dbg
-
-                _dbg(
-                    "H5",
-                    "KernelLamma.py:wait_for_user_input",
-                    "picked hud",
-                    {"msg_id": hud_id, "text_len": len(hud_msg)},
-                )
-            except Exception:
-                pass
             print(f"\n[HUD] YOU: {hud_msg}\n")
             return hud_msg, "hud", hud_id
         try:
-            term = _HUD_INPUT_QUEUE.get(timeout=0.3)
-            try:
-                from glados_hud.chat_bridge import _dbg
-
-                _dbg(
-                    "H5",
-                    "KernelLamma.py:wait_for_user_input",
-                    "picked terminal",
-                    {"text_len": len(str(term or ""))},
-                )
-            except Exception:
-                pass
-            return term, "terminal", None
+            return _HUD_INPUT_QUEUE.get(timeout=0.3), "terminal", None
         except queue.Empty:
             continue
 
@@ -1333,13 +1527,14 @@ def _hud_wants_facility_report(text: str) -> bool:
 
 def _hud_wants_full_task(text: str) -> bool:
     """HUD chat defaults to conversation — only full learn/run when clearly requested."""
-    low = (text or "").lower()
+    if _is_simple_app_request(text):
+        return False
+    low = (text or "").lower().strip()
+    if low.startswith(("learn ", "run ", "execute ", "teach yourself")):
+        return True
     triggers = (
-        "learn how",
-        "learn to",
-        "teach yourself",
-        "run ",
-        "execute ",
+        "please learn",
+        "learn how to",
         "develop a skill",
         "write a script",
         "push to github",
@@ -1419,7 +1614,12 @@ def main():
         with open(".gitignore", "w") as f: f.write("venv/\n__pycache__/\n*.pyc\nplugins/settings.json")
 
     print(f"--- GLADOS V20.1 (Govee Fixed) ---")
-    print(f"[*] Chat model: {MODEL_NAME} | execution_mode: {EXECUTION_MODE} | omni_brain: {OMNI_BRAIN_ENABLED}")
+    print(
+        f"[*] Chat model: {MODEL_NAME} | execution_mode: {EXECUTION_MODE} | "
+        f"memory_sandwich: {MEMORY_FORCE_SANDWICH} | memory_consolidate: {MEMORY_CONSOLIDATION_ENABLED} | "
+        f"os_control: {OS_CONTROL_ENABLED} | "
+        f"omni_brain: {OMNI_BRAIN_ENABLED}"
+    )
 
     facility_brain = None
     if FACILITY_BRAIN_ENABLED:
@@ -1505,17 +1705,6 @@ def main():
             user_input, input_source, hud_msg_id = wait_for_user_input()
             if not user_input:
                 continue
-            try:
-                from glados_hud.chat_bridge import _dbg
-
-                _dbg(
-                    "H5",
-                    "KernelLamma.py:main",
-                    "turn begin",
-                    {"source": input_source, "hud_msg_id": hud_msg_id, "text_len": len(user_input)},
-                )
-            except Exception:
-                pass
             _hud_log_user(user_input, source=input_source)
             telemetry_log(TELEMETRY_PATH, "heard", {"text": user_input})
             try:
@@ -1548,10 +1737,20 @@ def main():
                         chat_history.append({"role": "assistant", "content": fb_msg})
                         _trim_chat_history(chat_history)
                         _hud_log_assistant(fb_msg)
-                        _complete_active_hud_message()
+                        _end_turn(user_input, fb_msg)
                         if facility_brain.routing_mode == "brain_only":
                             continue
                         continue
+
+            fast_app_msg = _try_fast_app_action(user_input)
+            if fast_app_msg:
+                _think("execute", "Fast app launch/close", detail={"text": fast_app_msg[:80]})
+                chat_history.append({"role": "user", "content": user_input})
+                chat_history.append({"role": "assistant", "content": fast_app_msg})
+                _trim_chat_history(chat_history)
+                _hud_log_assistant(fast_app_msg)
+                _end_turn(user_input, fast_app_msg, system_logs=fast_app_msg)
+                continue
 
             # 2. Task vs chat — HUD uses fast conversation unless user asks for learn/run
             task_turn = _user_requests_task(user_input)
@@ -1598,7 +1797,7 @@ def main():
                     chat_history.append({"role": "assistant", "content": reply})
                     _trim_chat_history(chat_history)
                     _hud_log_assistant(reply)
-                    _complete_active_hud_message()
+                    _end_turn(user_input, reply)
                     # Learner already spoke step-by-step; avoid repeating the full reply.
                     continue
             telemetry_log(
@@ -1622,8 +1821,8 @@ def main():
                         user_input,
                         _cfg,
                         top_k=MEMORY_TOP_K,
-                        include_static=not (conversational and CONVERSATIONAL_SKIP_MEMORY),
-                        include_chroma=not (conversational and CONVERSATIONAL_SKIP_MEMORY),
+                        include_static=_memory_includes_static(conversational),
+                        include_chroma=_memory_includes_chroma(conversational),
                         include_computer_brain=True,
                     )
             except Exception:
@@ -1675,7 +1874,9 @@ def main():
                 skills_list_text,
                 conversational,
                 facility_context=facility_context,
+                omit_memory=MEMORY_FORCE_SANDWICH,
             )
+            llm_user_content = _llm_user_content(user_input, memory_context)
 
             # --- THE OMNI-BRAIN INTENT CLASSIFIER (optional) ---
             if (
@@ -1717,12 +1918,12 @@ def main():
                                 "routed": True,
                             },
                         )
-                        _complete_active_hud_message()
+                        _end_turn(user_input, "Completed routed action.")
                         continue
 
             # Prepare messages for Llama
             messages = [system_prompt] + chat_history
-            messages.append({"role": "user", "content": user_input})
+            messages.append({"role": "user", "content": llm_user_content})
             chat_history.append({"role": "user", "content": user_input})
 
             try:
@@ -1742,7 +1943,7 @@ def main():
                             {
                                 "role": "user",
                                 "content": [
-                                    {"type": "text", "text": user_input},
+                                    {"type": "text", "text": llm_user_content},
                                     {"type": "image_url", "image_url": {"url": data_url}},
                                 ],
                             },
@@ -1758,22 +1959,38 @@ def main():
 
                 ai_text = response.choices[0].message.content
                 telemetry_log(TELEMETRY_PATH, "llm_response", {"text": ai_text})
-                try:
-                    if _add_memory_event is not None:
-                        _add_memory_event({"event_type": "llm_response", "text": ai_text, "source": "assistant"}, _cfg)
-                except Exception:
-                    pass
-                run_code = _should_run_generated_code(user_input, ai_text)
+                run_code = _should_run_generated_code(
+                    user_input, ai_text, conversational=conversational
+                )
                 execution_result = extract_and_run(ai_text, user_input=user_input) if run_code else None
+                run_os = _should_run_os_action(
+                    user_input, ai_text, conversational=conversational
+                )
+                os_result = _run_os_actions(ai_text, user_input) if run_os else None
                 if run_code:
                     print(f"\n[DEBUG ERROR LOG]:\n{execution_result}\n")
-                elif re.search(r"```", ai_text or "", re.IGNORECASE) and not run_code:
+                elif run_os and os_result:
+                    print(f"\n[OS ACTION OUTPUT]:\n{os_result}\n")
+                elif re.search(r"```", ai_text or "", re.IGNORECASE) and not run_code and not run_os:
                     print("[*] Ignoring code block (conversation mode — say 'run …' to execute).")
-                if execution_result:
-                    preview = str(execution_result)[:500]
+                combined_output = None
+                if execution_result and os_result:
+                    combined_output = f"{execution_result}\n---\n{os_result}"
+                elif execution_result:
+                    combined_output = execution_result
+                elif os_result:
+                    combined_output = os_result
+                if combined_output:
+                    preview = str(combined_output)[:500]
                     success = not any(
                         x in preview
-                        for x in ("Runtime error", "SyntaxError", "Execution Error", "Traceback")
+                        for x in (
+                            "Runtime error",
+                            "SyntaxError",
+                            "Execution Error",
+                            "Traceback",
+                            "Execution failed",
+                        )
                     )
                     telemetry_log(
                         TELEMETRY_PATH,
@@ -1781,9 +1998,11 @@ def main():
                         {"output_preview": preview, "success": success},
                     )
 
-                if execution_result:
+                if combined_output:
                     # --- AUTO-REPAIR TRIGGER ---
-                    if "Runtime error" in execution_result or "SyntaxError" in execution_result:
+                    if execution_result and (
+                        "Runtime error" in execution_result or "SyntaxError" in execution_result
+                    ):
                         speak("Mutation required. Initiating self-repair protocol.")
                         try:
                             from glados_skills.repair import repair_skill_in_brain
@@ -1804,10 +2023,16 @@ def main():
                         except Exception as repair_err:
                             print(f"[!] Repair System Failed: {repair_err}")
 
-                    chat_history.append({"role": "user", "content": f"SYSTEM OUTPUT: {execution_result}"})
+                    follow_up_user = _llm_user_content(
+                        f"SYSTEM OUTPUT:\n{combined_output}",
+                        memory_context,
+                    )
+                    chat_history.append({"role": "user", "content": f"SYSTEM OUTPUT: {combined_output}"})
                     final_res = client.chat.completions.create(
                         model=MODEL_NAME,
-                        messages=[system_prompt] + chat_history,
+                        messages=[system_prompt] + chat_history[:-1] + [
+                            {"role": "user", "content": follow_up_user},
+                        ],
                         **_completion_kwargs(),
                     )
                     final_text = _spoken_reply(final_res.choices[0].message.content or "")
@@ -1815,19 +2040,20 @@ def main():
                     speak(final_text)
                     chat_history.append({"role": "assistant", "content": final_text})
                     _hud_log_assistant(final_text)
+                    _end_turn(user_input, final_text, system_logs=str(combined_output or ""))
                 else:
                     reply = _spoken_reply(ai_text)
                     telemetry_log(TELEMETRY_PATH, "llm_response", {"text": reply, "final": True})
                     speak(reply)
                     chat_history.append({"role": "assistant", "content": reply})
                     _hud_log_assistant(reply)
+                    _end_turn(user_input, reply, system_logs=str(combined_output or ""))
 
                 _trim_chat_history(chat_history)
-                _complete_active_hud_message()
 
             except Exception as e:
                 print(f"[!] ERROR: {e}")
-                _complete_active_hud_message()
+                _end_turn(user_input, f"Error: {e}")
 
     except KeyboardInterrupt:
         _complete_active_hud_message()

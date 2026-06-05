@@ -20,6 +20,10 @@ execution_mode: "text_only"
 omni_brain_enabled: false
 omni_brain_confidence_threshold: 72
 memory_top_k: 2
+# Force llama3.2:1b to use retrieved memory — sandwich [CRITICAL LOCAL MEMORY] into each user message
+memory_force_sandwich: true
+# Direct file read/write + shell via ```os``` JSON blocks from the model
+os_control_enabled: true
 
 # Facility Brain — full PC scan + fast decisions (customize configs/facility_brain.yaml)
 facility_brain_enabled: true
@@ -91,12 +95,15 @@ mic_channels: 1
 pre_roll_ms: 500
 utterance_max_sec: 10
 
-# Memory (Phase 0: static JSON facts + optional ChromaDB)
-memory_enable_chroma: false
+# Memory (static JSON + ChromaDB — requires: ollama pull nomic-embed-text)
+memory_enable_chroma: true
 chroma_persist_dir: "chroma_db"
 chroma_collection: "glados_memories"
 embedding_backend: "ollama"
 embedding_model: "nomic-embed-text"
+# Episodic consolidation — extract facts after each turn (filters out hello/how-are-you noise)
+memory_consolidation_enabled: true
+memory_consolidation_min_fact_len: 10
 
 # Elgato Wave Link: substring match for device names
 audio_output_match: "Wave Link"
@@ -120,7 +127,7 @@ llm_max_tokens: 128
 chat_history_max_messages: 6
 ollama_keep_alive: "30m"
 llm_warmup_on_start: true
-conversational_skip_memory: true
+conversational_skip_memory: false
 # Computer scan facts go to data/computer_brain_memory.json (memory system). Set false to avoid duplicate prompt block.
 facility_context_in_chat: false
 tts_async: true

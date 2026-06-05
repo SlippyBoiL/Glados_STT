@@ -111,7 +111,8 @@ def retrieve_memory_context(
             if not chroma_hits and chroma_store.last_error:
                 parts.append(
                     "- (Chroma enabled, but embeddings are not working. "
-                    f\"Check `embedding_model` in config and that Ollama has it pulled. Details: {chroma_store.last_error})\"
+                    f"Check `embedding_model` in config and that Ollama has it pulled. "
+                    f"Details: {chroma_store.last_error})"
                 )
     except Exception:
         # Memory should never break the kernel.
@@ -120,6 +121,48 @@ def retrieve_memory_context(
     if not parts:
         return "No relevant memory found. Run a facility scan to populate the computer brain."
     return "\n".join(parts)
+
+
+def build_sandwich_user_prompt(user_input: str, memory_context: str) -> str:
+    """
+    Force small models (e.g. llama3.2:1b) to attend to retrieved memory by placing it
+    immediately before the user query in the same user message.
+    """
+    mem = (memory_context or "").strip() or "No relevant memory found."
+    query = (user_input or "").strip()
+    return (
+        "You are GLaDOS. You must use the following strictly accurate local data "
+        "to formulate your response. Do not ignore it.\n\n"
+        "[CRITICAL LOCAL MEMORY]\n"
+        f"{mem}\n"
+        "[END OF MEMORY]\n\n"
+        f"User Input: {query}\n"
+        "Response:"
+    )
+
+
+def remember_os_action(
+    user_input: str,
+    command_type: str,
+    target: str,
+    output: str,
+    cfg: Dict[str, Any],
+) -> None:
+    """Persist OS command results into Chroma so Glados recalls what she did."""
+    text = (
+        f"OS action ({command_type}) on '{target}' for user request "
+        f"'{(user_input or '')[:200]}': {(output or '')[:2000]}"
+    )
+    add_memory_event(
+        {
+            "event_type": "os_action",
+            "text": text,
+            "source": "system",
+            "command_type": command_type,
+            "target": target,
+        },
+        cfg,
+    )
 
 
 def add_memory_event(event: Dict[str, Any], cfg: Dict[str, Any]) -> None:
