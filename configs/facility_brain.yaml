@@ -19,7 +19,7 @@ file_scan_enabled: true
 file_scan_max_files: 25000
 file_scan_max_depth: 12
 # Set true to walk entire user home (slower; still skips Windows/Program Files)
-file_scan_entire_home: false
+file_scan_entire_home: true
 # Include AppData (lots of cache — usually leave false)
 file_scan_include_appdata: false
 # Extra folders to index, e.g. D:/Projects
@@ -61,7 +61,7 @@ app_aliases:
 
 # Optional keyword → action overrides (highest priority after exact patterns)
 decision_rules:
-  - keywords: ["status", "how are you", "system report", "full scan"]
+  - keywords: ["system report", "facility scan", "full scan", "brain report", "how is the computer"]
     action: report_status
   - keywords: ["flush dns", "fix dns", "fix internet", "fix wifi", "network fix"]
     action: network_repair

@@ -1283,12 +1283,52 @@ def wait_for_user_input():
         hud_msg, hud_id = pop_pending_message(_cfg)
         if hud_msg:
             _ACTIVE_HUD_MSG_ID = hud_id
+            try:
+                from glados_hud.chat_bridge import _dbg
+
+                _dbg(
+                    "H5",
+                    "KernelLamma.py:wait_for_user_input",
+                    "picked hud",
+                    {"msg_id": hud_id, "text_len": len(hud_msg)},
+                )
+            except Exception:
+                pass
             print(f"\n[HUD] YOU: {hud_msg}\n")
             return hud_msg, "hud", hud_id
         try:
-            return _HUD_INPUT_QUEUE.get(timeout=0.3), "terminal", None
+            term = _HUD_INPUT_QUEUE.get(timeout=0.3)
+            try:
+                from glados_hud.chat_bridge import _dbg
+
+                _dbg(
+                    "H5",
+                    "KernelLamma.py:wait_for_user_input",
+                    "picked terminal",
+                    {"text_len": len(str(term or ""))},
+                )
+            except Exception:
+                pass
+            return term, "terminal", None
         except queue.Empty:
             continue
+
+
+def _hud_wants_facility_report(text: str) -> bool:
+    """HUD chat is conversational — only run facility brain when status is explicitly requested."""
+    low = (text or "").lower()
+    return any(
+        p in low
+        for p in (
+            "system report",
+            "facility scan",
+            "full scan",
+            "status report",
+            "brain report",
+            "how is the computer",
+            "scan report",
+        )
+    )
 
 
 def _hud_wants_full_task(text: str) -> bool:
@@ -1319,6 +1359,16 @@ def _is_shutdown_command(text: str) -> bool:
 def _hud_log_user(text: str, source: str = "terminal") -> None:
     text = (text or "").strip()
     if not text:
+        return
+    if source == "hud":
+        try:
+            telemetry_log(
+                TELEMETRY_PATH,
+                "hud_chat",
+                {"role": "user", "text": text, "source": source},
+            )
+        except Exception:
+            pass
         return
     if source == "terminal":
         try:
@@ -1455,6 +1505,17 @@ def main():
             user_input, input_source, hud_msg_id = wait_for_user_input()
             if not user_input:
                 continue
+            try:
+                from glados_hud.chat_bridge import _dbg
+
+                _dbg(
+                    "H5",
+                    "KernelLamma.py:main",
+                    "turn begin",
+                    {"source": input_source, "hud_msg_id": hud_msg_id, "text_len": len(user_input)},
+                )
+            except Exception:
+                pass
             _hud_log_user(user_input, source=input_source)
             telemetry_log(TELEMETRY_PATH, "heard", {"text": user_input})
             try:
@@ -1471,7 +1532,8 @@ def main():
             )
 
             # 1b. FACILITY BRAIN — scan-based decisions without LLM (fast path)
-            if facility_brain is not None and facility_brain.enabled:
+            skip_facility_for_hud = input_source == "hud" and not _hud_wants_facility_report(user_input)
+            if facility_brain is not None and facility_brain.enabled and not skip_facility_for_hud:
                 if facility_brain.routing_mode in ("brain_first", "brain_only", "advisory"):
                     _think("facility", "Checking facility brain for a fast decision…")
                     handled, fb_msg = facility_brain.try_handle(user_input, speak_fn=speak)
@@ -1486,6 +1548,7 @@ def main():
                         chat_history.append({"role": "assistant", "content": fb_msg})
                         _trim_chat_history(chat_history)
                         _hud_log_assistant(fb_msg)
+                        _complete_active_hud_message()
                         if facility_brain.routing_mode == "brain_only":
                             continue
                         continue
@@ -1535,6 +1598,7 @@ def main():
                     chat_history.append({"role": "assistant", "content": reply})
                     _trim_chat_history(chat_history)
                     _hud_log_assistant(reply)
+                    _complete_active_hud_message()
                     # Learner already spoke step-by-step; avoid repeating the full reply.
                     continue
             telemetry_log(
@@ -1653,6 +1717,7 @@ def main():
                                 "routed": True,
                             },
                         )
+                        _complete_active_hud_message()
                         continue
 
             # Prepare messages for Llama
@@ -1758,9 +1823,11 @@ def main():
                     _hud_log_assistant(reply)
 
                 _trim_chat_history(chat_history)
+                _complete_active_hud_message()
 
             except Exception as e:
                 print(f"[!] ERROR: {e}")
+                _complete_active_hud_message()
 
     except KeyboardInterrupt:
         _complete_active_hud_message()

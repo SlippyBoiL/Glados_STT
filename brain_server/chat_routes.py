@@ -31,6 +31,28 @@ class ChatSendBody(BaseModel):
 def chat_send(body: ChatSendBody) -> Dict[str, Any]:
     cfg = load_config()
     text = body.text.strip()
+    # region agent log
+    try:
+        import json as _json
+        import os as _os
+        import time as _time
+
+        from glados_paths import REPO_ROOT
+
+        _payload = {
+            "sessionId": "514799",
+            "runId": "post-fix",
+            "hypothesisId": "H4",
+            "location": "brain_server/chat_routes.py:chat_send",
+            "message": "POST /api/chat/send",
+            "data": {"text_len": len(text)},
+            "timestamp": int(_time.time() * 1000),
+        }
+        with open(_os.path.join(REPO_ROOT, "debug-514799.log"), "a", encoding="utf-8") as _f:
+            _f.write(_json.dumps(_payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # endregion agent log
     msg_id = enqueue_user_message(text, cfg)
     if not msg_id:
         return {"ok": False, "error": "empty message"}

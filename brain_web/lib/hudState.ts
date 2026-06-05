@@ -173,7 +173,12 @@ export function lastSubtitle(events: TelemetryEvent[]): string {
       }
     }
     if (ev.event_type === "heard") {
-      return `Subject: "${String(ev.payload?.text || "").slice(0, 120)}"`;
+      const heard = String(ev.payload?.text || "").trim();
+      const low = heard.toLowerCase();
+      if (low === "exit" || low === "quit" || low === "shutdown") {
+        continue;
+      }
+      return `Subject: "${heard.slice(0, 120)}"`;
     }
   }
   return "Facility systems nominal. Awaiting test subject.";
