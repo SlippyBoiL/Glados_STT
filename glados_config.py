@@ -26,9 +26,16 @@ def load_config() -> Dict[str, Any]:
     Defaults → configs/glados.yaml → environment variables (highest priority).
     """
     cfg: Dict[str, Any] = {
+        "llm_provider": "openclaw",
+        "openclaw_base_url": "http://127.0.0.1:18789/v1",
+        "openclaw_model": "openclaw/default",
+        "openclaw_config_path": "",
+        "openclaw_api_key": "",
+        "openclaw_vision_backend": "",
+        "openclaw_embedding_backend": "",
         "ollama_base_url": "http://127.0.0.1:11434/v1",
-        "model_name": "llama3.2-vision",
-        "vision_model": "llama3.2-vision",
+        "model_name": "openclaw/default",
+        "vision_model": "openclaw/default",
         "piper_model_path": os.path.join(REPO_ROOT, "glados.onnx"),
         "piper_output_wav": os.path.join(REPO_ROOT, "local_glados_response.wav"),
         "piper_exe_path": "",
@@ -51,8 +58,8 @@ def load_config() -> Dict[str, Any]:
         "memory_enable_chroma": False,
         "chroma_persist_dir": os.path.join(REPO_ROOT, "chroma_db"),
         "chroma_collection": "glados_memories",
-        "embedding_backend": "ollama",
-        "embedding_model": "nomic-embed-text",
+        "embedding_backend": "openclaw",
+        "embedding_model": "openclaw/default",
         "memory_consolidation_enabled": True,
         "memory_consolidation_min_fact_len": 10,
         # Inference speed (Ollama does GPU work on the *server* at ollama_base_url, not this PC)
@@ -93,11 +100,17 @@ def load_config() -> Dict[str, Any]:
         "skills_learn_safety_cap": 0,
         "skills_learn_max_attempts": 0,
         "skills_learn_use_web": True,
-        "skills_learn_open_browser": True,
-        "skills_learn_reuse_browser": True,
+        "web_search_mode": "duckduckgo_scrape",
+        "skills_learn_use_free_web": True,
+        "web_scrape_timeout_sec": 12.0,
+        "skills_learn_open_browser": False,
+        "skills_learn_reuse_browser": False,
         "skills_learn_pause_sec": 2.0,
         "skills_learn_step_pause_sec": 6.0,
-        "skills_learn_use_browser_ai": True,
+        "skills_learn_use_browser_ai": False,
+        "idle_epiphany_enabled": True,
+        "idle_epiphany_minutes": 5.0,
+        "idle_epiphany_poll_sec": 30.0,
         "skills_learn_skip_search_tabs": True,
         "skills_learn_browser_sites": ["gemini", "perplexity"],
         "skills_learn_browser_wait_sec": 180,
@@ -137,6 +150,12 @@ def load_config() -> Dict[str, Any]:
             pass
 
     # Env overrides (same names you already use in places)
+    _deep_set(cfg, "llm_provider", os.environ.get("LLM_PROVIDER"))
+    _deep_set(cfg, "openclaw_base_url", os.environ.get("OPENCLAW_BASE_URL"))
+    _deep_set(cfg, "openclaw_model", os.environ.get("OPENCLAW_MODEL"))
+    _deep_set(cfg, "openclaw_api_key", os.environ.get("OPENCLAW_GATEWAY_TOKEN") or os.environ.get("OPENCLAW_API_KEY"))
+    _deep_set(cfg, "openclaw_vision_backend", os.environ.get("OPENCLAW_VISION_BACKEND"))
+    _deep_set(cfg, "openclaw_embedding_backend", os.environ.get("OPENCLAW_EMBEDDING_BACKEND"))
     _deep_set(cfg, "ollama_base_url", os.environ.get("OLLAMA_BASE_URL"))
     _deep_set(cfg, "model_name", os.environ.get("MODEL_NAME"))
     _deep_set(cfg, "vision_model", os.environ.get("VISION_MODEL"))

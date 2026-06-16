@@ -19,11 +19,14 @@ class Advisor:
 
 
 def build_advisors(cfg: Dict[str, Any], primary_client: Any, primary_model: str) -> List[Advisor]:
-    """Ollama for local codegen; browser Gemini/Perplexity for research (no API keys)."""
+    """Primary LLM (OpenClaw/Ollama) for codegen; browser Gemini/Perplexity for research (no API keys)."""
     advisors: List[Advisor] = []
 
     if primary_client and primary_model:
-        advisors.append(Advisor("ollama", primary_client, primary_model))
+        from glados_llm import is_openclaw
+
+        name = "openclaw" if is_openclaw(cfg) else "ollama"
+        advisors.append(Advisor(name, primary_client, primary_model))
 
     use_browser = bool(cfg.get("skills_learn_use_browser_ai", True))
     use_api = bool(cfg.get("skills_learn_use_ai_council", False))

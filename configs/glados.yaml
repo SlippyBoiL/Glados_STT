@@ -4,15 +4,24 @@
 # model_name / vision_model must match `ollama list` exactly (case-sensitive). Example:
 #   ollama pull llama3.2-vision
 
-# Same machine as Glados (GPU usage shows on this PC in Task Manager / nvidia-smi)
+# --- LLM provider: openclaw (gateway) — all inference routes through OpenClaw ---
+# OpenClaw routes chat, vision, and embeddings to configured backends (OpenRouter, local, etc.)
+llm_provider: "openclaw"
+openclaw_base_url: "http://127.0.0.1:18789/v1"
+openclaw_model: "openclaw/default"
+# Token: set OPENCLAW_GATEWAY_TOKEN env, or Glados reads ~/.openclaw/openclaw.json automatically
+# openclaw_api_key: ""
+
+# Optional backend overrides (x-openclaw-model header) — model must be allowed in OpenClaw config
+# openclaw_vision_backend: "openrouter/google/gemini-2.0-flash-exp:free"
+# openclaw_embedding_backend: ""
+
+# Legacy Ollama URL — only used if llm_provider: ollama and embedding_backend: ollama
 ollama_base_url: "http://127.0.0.1:11434/v1"
 
-# --- Models (names must match `ollama list` exactly) ---
-# Fast chat on weak hardware (recommended):  ollama pull llama3.2:1b
-# Heavier / smarter:                         ollama pull llama3.2
-# Vision (screen only, slow):                ollama pull llama3.2-vision
-model_name: "llama3.2:1b"
-vision_model: "llama3.2-vision"
+# Chat + vision agent targets (openclaw/default = agent primary in OpenClaw)
+model_name: "openclaw/default"
+vision_model: "openclaw/default"
 
 # text_only = normal conversation, no auto-running Python (say "run …" / "open …" to act)
 # auto = legacy behavior (runs code whenever the model emits a code block)
@@ -38,12 +47,16 @@ skills_learn_unlimited_attempts: true
 skills_learn_safety_cap: 0
 skills_learn_max_attempts: 0
 skills_learn_use_web: true
-skills_learn_open_browser: true
-skills_learn_reuse_browser: true
+# Free web first (DuckDuckGo search + page scrape) — no paid APIs, no browser tabs
+web_search_mode: "duckduckgo_scrape"
+skills_learn_use_free_web: true
+web_scrape_timeout_sec: 12.0
+skills_learn_open_browser: false
+skills_learn_reuse_browser: false
 skills_learn_pause_sec: 2.0
 skills_learn_step_pause_sec: 6.0
-# Browser AI (logged-in Gemini + Perplexity in data/glados_browser_profile) — no API keys
-skills_learn_use_browser_ai: true
+# Browser AI off by default — costs time; enable only if you want Gemini/Perplexity tabs
+skills_learn_use_browser_ai: false
 skills_learn_skip_search_tabs: true
 skills_learn_browser_sites:
   - gemini
@@ -95,15 +108,20 @@ mic_channels: 1
 pre_roll_ms: 500
 utterance_max_sec: 10
 
-# Memory (static JSON + ChromaDB — requires: ollama pull nomic-embed-text)
+# Memory (static JSON + ChromaDB — embeddings via OpenClaw /v1/embeddings)
 memory_enable_chroma: true
 chroma_persist_dir: "chroma_db"
 chroma_collection: "glados_memories"
-embedding_backend: "ollama"
-embedding_model: "nomic-embed-text"
+embedding_backend: "openclaw"
+embedding_model: "openclaw/default"
 # Episodic consolidation — extract facts after each turn (filters out hello/how-are-you noise)
 memory_consolidation_enabled: true
 memory_consolidation_min_fact_len: 10
+
+# Idle epiphany — when quiet, GLaDOS searches the web and stores facts herself
+idle_epiphany_enabled: true
+idle_epiphany_minutes: 5
+idle_epiphany_poll_sec: 30
 
 # Elgato Wave Link: substring match for device names
 audio_output_match: "Wave Link"

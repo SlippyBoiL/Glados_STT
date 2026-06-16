@@ -41,6 +41,17 @@ function telemetryToMessages(events: TelemetryEvent[]): ChatMessage[] {
           phase: String(p.phase || ""),
         });
       }
+    } else if (ev.event_type === "action_progress") {
+      const text = String(p.message || "").trim();
+      if (text) {
+        out.push({
+          id: `action-${ev.ts}-${text.slice(0, 16)}`,
+          role: "thinking",
+          text: `⚙ ${text}`,
+          ts: ev.ts,
+          phase: String(p.phase || "action"),
+        });
+      }
     } else if (ev.event_type === "heard") {
       const text = String(p.text || "").trim();
       if (text) {

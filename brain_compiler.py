@@ -7,13 +7,14 @@ _REPO = os.path.dirname(os.path.abspath(__file__))
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 from glados_config import load_config
-
-from openai import OpenAI
+from glados_llm import create_llm_client, resolve_chat_model
 
 _cfg = load_config()
-client = OpenAI(api_key="ollama", base_url=_cfg["ollama_base_url"])
-MODEL_NAME = _cfg["model_name"]
-PLUGINS_DIR = "plugins"
+client = create_llm_client(_cfg)
+MODEL_NAME = resolve_chat_model(_cfg)
+from glados_paths import resolve_plugins_dir
+
+PLUGINS_DIR = resolve_plugins_dir(_cfg)
 JSON_FILE = "brain_data.json"
 
 def extract_description(filepath):

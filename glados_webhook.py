@@ -5,20 +5,20 @@ import numpy as np
 import sounddevice as sd
 import soundfile as sf
 from flask import Flask, request, jsonify
-from openai import OpenAI
 
 _REPO = os.path.dirname(os.path.abspath(__file__))
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 from glados_config import load_config
+from glados_llm import create_llm_client, resolve_chat_model
 
 _cfg = load_config()
 
 app = Flask(__name__)
 
 # --- CONFIGURATION (configs/glados.yaml + env; same as kernel)
-client = OpenAI(api_key="ollama", base_url=_cfg["ollama_base_url"])
-MODEL_NAME = _cfg["model_name"]
+client = create_llm_client(_cfg)
+MODEL_NAME = resolve_chat_model(_cfg)
 AUDIO_OUTPUT_MATCH = _cfg["audio_output_match"]
 
 

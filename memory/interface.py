@@ -111,7 +111,7 @@ def retrieve_memory_context(
             if not chroma_hits and chroma_store.last_error:
                 parts.append(
                     "- (Chroma enabled, but embeddings are not working. "
-                    f"Check `embedding_model` in config and that Ollama has it pulled. "
+                    "Check OpenClaw gateway + agents.defaults.memorySearch in ~/.openclaw/openclaw.json. "
                     f"Details: {chroma_store.last_error})"
                 )
     except Exception:

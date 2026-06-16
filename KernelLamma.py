@@ -1,3 +1,4 @@
+import glob
 import os
 import re
 import ast
@@ -61,10 +62,20 @@ except Exception:
 
 _cfg = _load_glados_config()
 
+from glados_llm import (
+    check_llm_reachable,
+    completion_kwargs as llm_completion_kwargs,
+    create_llm_client,
+    is_openclaw,
+    resolve_chat_model,
+    resolve_vision_model,
+    resolve_vision_backend_model,
+)
+
 # --- CONFIGURATION ---
-PERPLEXITY_API_KEY = "ollama"
-MODEL_NAME = _cfg["model_name"]
-VISION_MODEL = _cfg.get("vision_model", "llama3.2-vision")
+MODEL_NAME = resolve_chat_model(_cfg)
+VISION_MODEL = resolve_vision_model(_cfg)
+VISION_BACKEND_MODEL = resolve_vision_backend_model(_cfg)
 GOVEE_API_KEY = "a2e66167-cbe7-4416-93f7-d54c7f92c7b6"
 GOVEE_API_BASE = "https://openapi.api.govee.com/router/api/v1"
 
@@ -239,14 +250,11 @@ VISION_PHRASES = (
 )
 
 
-def _completion_kwargs():
-    kw = {}
-    if LLM_MAX_TOKENS > 0:
-        kw["max_tokens"] = LLM_MAX_TOKENS
-    if OLLAMA_KEEP_ALIVE:
-        kw["extra_body"] = {"keep_alive": OLLAMA_KEEP_ALIVE}
-    return kw
+def _completion_kwargs(*, backend_model: str = ""):
+    return llm_completion_kwargs(_cfg, backend_model=backend_model)
 
+
+client = create_llm_client(_cfg)
 
 _ACTION_REQUEST_PHRASES = (
     "run ",
@@ -340,28 +348,65 @@ def _extract_app_name(text: str, *, close: bool = False) -> str:
         )
     else:
         m = re.search(
-            r"\b(?:open|launch|start|fire up|boot up)\s+(.+?)(?:\?| please|$)",
+            r"\b(?:open(?:\s+up)?|launch|start|fire up|boot up)\s+(?:the\s+)?(.+?)(?:\?| please|$)",
             low,
         )
     if m:
-        return m.group(1).strip(" .!?")
-    verbs = (
-        r"\b(close|quit|kill|terminate|stop|exit)\b"
-        if close
-        else r"\b(open|start|launch|fire up|boot up|run|up)\b"
-    )
-    name = re.sub(verbs, "", low).strip()
-    name = re.sub(r"^(can you|could you|please|would you)\s+", "", name)
+        name = m.group(1).strip(" .!?")
+    else:
+        verbs = (
+            r"\b(close|quit|kill|terminate|stop|exit)\b"
+            if close
+            else r"\b(open(?:\s+up)?|start|launch|fire up|boot up|run)\b"
+        )
+        name = re.sub(verbs, "", low).strip()
+        name = re.sub(r"^(can you|could you|please|would you)\s+", "", name)
+        name = name.strip(" .!?")
+    name = re.sub(r"^(the|a|an)\s+", "", name)
     return name.strip(" .!?")
+
+
+def _is_vague_app_request(text: str) -> bool:
+    low = (text or "").lower()
+    return any(
+        p in low
+        for p in (
+            "random app",
+            "some app",
+            "any app",
+            "a random",
+            "open up a random",
+        )
+    )
+
+
+def _resolve_folder_target(name: str) -> Optional[str]:
+    low = (name or "").lower().replace(" folder", "").strip()
+    mapping = {
+        "downloads": "Downloads",
+        "download": "Downloads",
+        "desktop": "Desktop",
+        "documents": "Documents",
+        "pictures": "Pictures",
+        "music": "Music",
+        "videos": "Videos",
+    }
+    sub = mapping.get(low)
+    if not sub:
+        return None
+    path = os.path.join(os.path.expanduser("~"), sub)
+    return path if os.path.isdir(path) else None
 
 
 def _is_simple_app_request(text: str) -> bool:
     low = (text or "").lower()
-    opening = any(p in low for p in ("open ", "launch ", "start "))
+    opening = any(p in low for p in ("open ", "open up ", "launch ", "start "))
     closing = any(p in low for p in ("close ", "quit ", "kill "))
     if not opening and not closing:
         return False
-    if any(p in low for p in ("learn", "github", "git push", "script", "protocol", "teach yourself")):
+    if _is_vague_app_request(text):
+        return False
+    if any(p in low for p in ("learn", "github", "git push", "script", "protocol", "teach yourself", "organize")):
         return False
     return True
 
@@ -375,12 +420,11 @@ def _try_fast_app_action(text: str) -> Optional[str]:
         app = _extract_app_name(text, close=True)
         if handle_app_close(text):
             return f"Terminated {app or 'the application'}. Moving on."
-        return f"I could not close {app or 'that application'}."
-    if handle_app_open(text):
-        app = _extract_app_name(text, close=False)
-        return f"Opened {app or 'the application'}. Try not to break anything."
+        return f"Could not close {app or 'that application'}."
     app = _extract_app_name(text, close=False)
-    return f"I could not find {app or 'that application'} on this machine."
+    if handle_app_open(text):
+        return f"Opened {app or 'the application'}."
+    return f"Could not open {app or 'that target'} on this machine."
 
 
 def _spoken_reply(ai_text: str) -> str:
@@ -669,8 +713,10 @@ APP_ALIASES = {
     "discord": "discord",
     "spotify": "spotify",
     "steam": "steam",
+    "autocad": "autocad",
     "vs code": "code",
-    "code": "code"
+    "code": "code",
+    "cursor": "cursor",
 }
 
 # --- GOVEE DEVICES ---
@@ -723,7 +769,7 @@ TECHNICAL_FIXES = {
 # --- SAFETY ---
 DENYLIST_PATTERNS = [r"\bformat\s+[a-z]:\b", r"kernel\.py", r"del\s+.*kernel\.py"]
 
-client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url=_cfg["ollama_base_url"])
+# client created above via glados_llm.create_llm_client(_cfg)
 
 # --- AUDIO SETTINGS ---
 VOICE_VOLUME = 1.0       
@@ -769,6 +815,11 @@ def find_app_path(app_name):
             "C:\\Program Files (x86)\\Steam\\steam.exe",
             "C:\\Program Files\\Steam\\steam.exe"
         ],
+        "autocad": [
+            "C:\\Program Files\\Autodesk\\AutoCAD 2026\\acad.exe",
+            "C:\\Program Files\\Autodesk\\AutoCAD 2025\\acad.exe",
+            "C:\\Program Files\\Autodesk\\AutoCAD 2024\\acad.exe",
+        ],
         "code": [
             "C:\\Program Files\\Microsoft VS Code\\Code.exe",
             "C:\\Program Files (x86)\\Microsoft VS Code\\Code.exe"
@@ -783,7 +834,13 @@ def find_app_path(app_name):
         for path in common_paths[app_name]:
             if os.path.exists(path):
                 return path
-    
+
+    if app_name == "autocad":
+        for base in (r"C:\Program Files\Autodesk", r"C:\Program Files (x86)\Autodesk"):
+            hits = sorted(glob.glob(os.path.join(base, "AutoCAD *", "acad.exe")))
+            if hits:
+                return hits[-1]
+
     # Try Windows registry lookup for installed apps
     try:
         reg_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"
@@ -1088,9 +1145,10 @@ def speak(text):
         _speak_sync(scrubbed)
 
 
-def _ollama_warmup() -> None:
+def _llm_warmup(*, blocking: bool = True) -> None:
     if not LLM_WARMUP_ON_START:
         return
+    label = "OpenClaw" if is_openclaw(_cfg) else "Ollama"
 
     def _run():
         try:
@@ -1101,11 +1159,15 @@ def _ollama_warmup() -> None:
                 messages=[{"role": "user", "content": "ping"}],
                 **warm_kw,
             )
-            print("[*] Ollama model warmed up.")
+            print(f"[*] {label} model warmed up.")
         except Exception as e:
-            print(f"[!] Ollama warmup skipped: {e}")
+            print(f"[!] {label} warmup skipped: {e}")
 
-    threading.Thread(target=_run, daemon=True).start()
+    if blocking:
+        print(f"[*] Warming up {label} (first reply will be faster)…")
+        _run()
+    else:
+        threading.Thread(target=_run, daemon=True).start()
 
 
 # ==================================================================================
@@ -1230,28 +1292,46 @@ def extract_and_run(ai_text, user_input: str = ""):
 def handle_app_open(text):
     text = text.lower()
     app_name = _extract_app_name(text, close=False)
-    
-    # --- NEW: WEB REROUTE ---
+
     web_sites = {
         "youtube": "https://www.youtube.com",
         "google": "https://www.google.com",
         "github": "https://www.github.com",
-        "canvas": "https://canvas.instructure.com" # Useful for your degree!
+        "canvas": "https://canvas.instructure.com",
     }
-
     if app_name in web_sites:
         speak(f"Opening {app_name} in your browser. Try not to get distracted by cat videos.")
         webbrowser.open(web_sites[app_name])
         return True
-    # ------------------------
+
+    folder_path = _resolve_folder_target(app_name)
+    if folder_path:
+        try:
+            os.startfile(folder_path)
+            speak(f"Opening {app_name}.")
+            return True
+        except Exception as e:
+            print(f"[!] Folder open failed: {e}")
+            return False
 
     app_key = APP_ALIASES.get(app_name, app_name)
     exe_path = find_app_path(app_key)
     try:
-        if exe_path and os.path.isfile(exe_path):
-            subprocess.Popen([exe_path], shell=False)
+        if exe_path and os.path.isdir(exe_path):
+            os.startfile(exe_path)
         else:
-            subprocess.Popen(f'start "" "{exe_path}"', shell=True)
+            candidates = []
+            for c in (exe_path, app_key, f"{app_key}.exe"):
+                if c and c not in candidates:
+                    candidates.append(c)
+            launched = False
+            for candidate in candidates:
+                if os.path.isfile(candidate):
+                    subprocess.Popen([candidate], shell=False)
+                    launched = True
+                    break
+            if not launched:
+                return False
         speak(f"Launching {app_name}. Try not to break anything.")
         return True
     except Exception as e:
@@ -1474,6 +1554,21 @@ def _schedule_memory_consolidation(
     threading.Thread(target=_run, daemon=True).start()
 
 
+_KERNEL_PROCESSING = False
+_KERNEL_PROC_LOCK = threading.Lock()
+
+
+def _set_kernel_processing(active: bool) -> None:
+    global _KERNEL_PROCESSING
+    with _KERNEL_PROC_LOCK:
+        _KERNEL_PROCESSING = active
+
+
+def _kernel_is_busy() -> bool:
+    with _KERNEL_PROC_LOCK:
+        return _KERNEL_PROCESSING
+
+
 def _end_turn(
     user_input: str,
     glados_response: str,
@@ -1483,6 +1578,7 @@ def _end_turn(
     """Episodic consolidation (async) then release the HUD inbox slot."""
     _schedule_memory_consolidation(user_input, system_logs, glados_response)
     _complete_active_hud_message()
+    _set_kernel_processing(False)
 
 
 def wait_for_user_input():
@@ -1525,16 +1621,62 @@ def _hud_wants_facility_report(text: str) -> bool:
     )
 
 
+def _try_meta_status_reply(text: str) -> Optional[str]:
+    """Fast, honest replies when the user is checking if Glados is alive or ready to learn."""
+    low = (text or "").lower()
+    if re.search(r"\b(not responding|aren'?t responding|no response|looks like you)\b", low):
+        return (
+            "I'm online. Learn and run tasks can take several minutes—I post progress here "
+            "and in the terminal. Say something concrete like: learn how to use the Cursor agent."
+        )
+    if re.search(r"\b(are you learning|ready to learn|assume you'?re ready)\b", low):
+        return (
+            "I'm listening. To start learning, tell me exactly what to learn—for example: "
+            "learn how to talk to other AI voice assistants via the web."
+        )
+    return None
+
+
+def _is_meta_status_question(text: str) -> bool:
+    low = (text or "").lower()
+    return bool(
+        re.search(
+            r"\b(not responding|aren'?t responding|are you learning|ready to learn|"
+            r"assume you'?re ready|you there|still there)\b",
+            low,
+        )
+    )
+
+
 def _hud_wants_full_task(text: str) -> bool:
-    """HUD chat defaults to conversation — only full learn/run when clearly requested."""
+    """HUD chat defaults to conversation — full learn/run when user wants action or learning."""
     if _is_simple_app_request(text):
         return False
     low = (text or "").lower().strip()
+    if low.endswith("?") and re.match(r"^(do you|are you|can you|would you)\b", low):
+        return False
+    learn_triggers = (
+        "learn about",
+        "learn how",
+        "learn to",
+        "learn more",
+        "lets learn",
+        "let's learn",
+        "want you to learn",
+        "want to learn",
+        "teach yourself",
+        "remember how to",
+        "figure out how to",
+    )
+    if any(p in low for p in learn_triggers):
+        return True
     if low.startswith(("learn ", "run ", "execute ", "teach yourself")):
         return True
-    triggers = (
+    task_triggers = (
+        "organize",
+        "clean up",
+        "sort my",
         "please learn",
-        "learn how to",
         "develop a skill",
         "write a script",
         "push to github",
@@ -1543,8 +1685,9 @@ def _hud_wants_full_task(text: str) -> bool:
         "push to the github",
         "git push",
         "github please",
+        "commit message",
     )
-    return any(p in low for p in triggers)
+    return any(p in low for p in task_triggers)
 
 
 def _is_shutdown_command(text: str) -> bool:
@@ -1615,7 +1758,8 @@ def main():
 
     print(f"--- GLADOS V20.1 (Govee Fixed) ---")
     print(
-        f"[*] Chat model: {MODEL_NAME} | execution_mode: {EXECUTION_MODE} | "
+        f"[*] Chat model: {MODEL_NAME} | provider: "
+        f"{'openclaw' if is_openclaw(_cfg) else 'ollama'} | execution_mode: {EXECUTION_MODE} | "
         f"memory_sandwich: {MEMORY_FORCE_SANDWICH} | memory_consolidate: {MEMORY_CONSOLIDATION_ENABLED} | "
         f"os_control: {OS_CONTROL_ENABLED} | "
         f"omni_brain: {OMNI_BRAIN_ENABLED}"
@@ -1666,7 +1810,23 @@ def main():
             "monitoring_devices": MONITORING_DEVICES,
         },
     )
-    _ollama_warmup()
+    ok, llm_msg = check_llm_reachable(_cfg)
+    if ok:
+        print(f"[*] LLM: {llm_msg}")
+    else:
+        print(f"[!] LLM: {llm_msg}")
+
+    try:
+        from glados_web.free_search import check_internet
+
+        if check_internet():
+            print("[*] Internet: OK — free DuckDuckGo web research enabled.")
+        else:
+            print("[!] Internet: unreachable — web learning will be limited.")
+    except Exception as e:
+        print(f"[!] Internet check failed: {e}")
+
+    _llm_warmup(blocking=True)
     speak("Oh... It's you. I'm online.")
 
     try:
@@ -1700,11 +1860,31 @@ def main():
         _add_memory_event = None
 
     try:
+        from glados_idle.epiphany import start_idle_epiphany_loop, touch_user_activity
+
+        start_idle_epiphany_loop(
+            _cfg,
+            client,
+            MODEL_NAME,
+            speak_fn=speak,
+            completion_kwargs=_completion_kwargs(),
+            think_fn=_think,
+            is_kernel_busy=_kernel_is_busy,
+        )
+    except Exception as e:
+        print(f"[!] Idle epiphany disabled: {e}")
+
+        def touch_user_activity() -> None:  # type: ignore[misc]
+            return None
+
+    try:
         while True:
             # 1. LISTEN / HUD / TERMINAL
             user_input, input_source, hud_msg_id = wait_for_user_input()
             if not user_input:
                 continue
+            touch_user_activity()
+            _set_kernel_processing(True)
             _hud_log_user(user_input, source=input_source)
             telemetry_log(TELEMETRY_PATH, "heard", {"text": user_input})
             try:
@@ -1742,6 +1922,15 @@ def main():
                             continue
                         continue
 
+            meta_reply = _try_meta_status_reply(user_input)
+            if meta_reply:
+                chat_history.append({"role": "user", "content": user_input})
+                chat_history.append({"role": "assistant", "content": meta_reply})
+                _trim_chat_history(chat_history)
+                _hud_log_assistant(meta_reply)
+                _end_turn(user_input, meta_reply)
+                continue
+
             fast_app_msg = _try_fast_app_action(user_input)
             if fast_app_msg:
                 _think("execute", "Fast app launch/close", detail={"text": fast_app_msg[:80]})
@@ -1751,6 +1940,32 @@ def main():
                 _hud_log_assistant(fast_app_msg)
                 _end_turn(user_input, fast_app_msg, system_logs=fast_app_msg)
                 continue
+
+            try:
+                from glados_skills.direct_actions import try_direct_action
+
+                direct_ok, direct_msg = try_direct_action(
+                    user_input,
+                    _cfg,
+                    think_fn=_think,
+                    hud_log_fn=_hud_log_assistant,
+                    telemetry_path=TELEMETRY_PATH,
+                )
+                if direct_ok is not None:
+                    _think(
+                        "organize" if "organiz" in user_input.lower() else "admin",
+                        "Direct action completed.",
+                        detail={"text": (direct_msg or "")[:120]},
+                    )
+                    chat_history.append({"role": "user", "content": user_input})
+                    chat_history.append({"role": "assistant", "content": direct_msg})
+                    _trim_chat_history(chat_history)
+                    speak(direct_msg[:400] if direct_msg else "Done.")
+                    _hud_log_assistant(direct_msg)
+                    _end_turn(user_input, direct_msg, system_logs=direct_msg)
+                    continue
+            except Exception as exc:
+                print(f"[!] Direct action error: {exc}")
 
             # 2. Task vs chat — HUD uses fast conversation unless user asks for learn/run
             task_turn = _user_requests_task(user_input)
@@ -1776,12 +1991,19 @@ def main():
 
                 _think("task", "Task request — matching or learning a protocol…")
                 print(f"\n[*] Task mode: learn/run (web + brain + retries)\n")
+
+                def _task_speak(line: str) -> None:
+                    speak(line)
+                    snippet = (line or "").strip()
+                    if snippet:
+                        _hud_log_assistant(snippet[:400])
+
                 handled, task_msg = handle_task(
                     user_input,
                     skill_brain,
                     client,
                     MODEL_NAME,
-                    speak_fn=speak,
+                    speak_fn=_task_speak,
                     completion_kwargs=_completion_kwargs(),
                     run_direct=SKILLS_RUN_DIRECT,
                     self_develop=SKILLS_SELF_DEVELOP,
@@ -1796,9 +2018,10 @@ def main():
                     chat_history.append({"role": "user", "content": user_input})
                     chat_history.append({"role": "assistant", "content": reply})
                     _trim_chat_history(chat_history)
-                    _hud_log_assistant(reply)
-                    _end_turn(user_input, reply)
-                    # Learner already spoke step-by-step; avoid repeating the full reply.
+                    if not reply or reply not in (task_msg or ""):
+                        _hud_log_assistant(reply)
+                    task_logs = (task_msg or reply or "").strip()
+                    _end_turn(user_input, reply, system_logs=task_logs)
                     continue
             telemetry_log(
                 TELEMETRY_PATH,
@@ -1829,7 +2052,12 @@ def main():
                 pass
 
             facility_context = ""
-            if FACILITY_CONTEXT_IN_CHAT and facility_brain is not None and facility_brain.enabled:
+            if (
+                FACILITY_CONTEXT_IN_CHAT
+                and facility_brain is not None
+                and facility_brain.enabled
+                and not _is_meta_status_question(user_input)
+            ):
                 try:
                     facility_context = facility_brain.context_for_llm()
                 except Exception:
@@ -1936,6 +2164,7 @@ def main():
 
                 if needs_vision and _flag_get("vision_enabled", True) and os.path.exists(LATEST_SCREEN_PATH):
                     data_url = _encode_screen_for_vision_jpeg(LATEST_SCREEN_PATH)
+                    vision_kw = _completion_kwargs(backend_model=VISION_BACKEND_MODEL)
                     response = client.chat.completions.create(
                         model=VISION_MODEL,
                         messages=[
@@ -1948,7 +2177,7 @@ def main():
                                 ],
                             },
                         ],
-                        **_completion_kwargs(),
+                        **vision_kw,
                     )
                 else:
                     response = client.chat.completions.create(

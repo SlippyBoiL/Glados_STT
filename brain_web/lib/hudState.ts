@@ -37,7 +37,8 @@ export function deriveVoiceState(events: TelemetryEvent[]): HudVoiceState {
     ) {
       return "thinking";
     }
-    if (t === "code_executed" || t === "monitor_alert") return "acting";
+    if (t === "code_executed" || t === "monitor_alert" || t === "action_progress")
+      return "acting";
   }
   return "idle";
 }
@@ -140,6 +141,14 @@ export function buildThoughtTimeline(events: TelemetryEvent[]): ThoughtItem[] {
         phase: "execute",
         message: p.success ? "Protocol executed" : "Execution failed",
         detail: String(p.output_preview || "").slice(0, 80),
+        source: "event",
+      });
+    } else if (ev.event_type === "action_progress") {
+      items.push({
+        ts: ev.ts,
+        time,
+        phase: String(p.phase || "action"),
+        message: String(p.message || "Working…"),
         source: "event",
       });
     }

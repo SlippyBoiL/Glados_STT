@@ -87,14 +87,20 @@ def develop_skill_conversational(
         if speak_fn and line:
             speak_fn(line)
 
-    use_browser_ai = bool(cfg.get("skills_learn_use_browser_ai", True))
-    _say(
-        "I will not stop until this is learned—I'll clarify what you mean, "
-        + (
+    use_browser_ai = bool(cfg.get("skills_learn_use_browser_ai", False))
+    use_free_web = bool(cfg.get("skills_learn_use_free_web", True))
+    research_mode = (
+        "search the free web (DuckDuckGo, no API keys), "
+        if use_free_web and not use_browser_ai
+        else (
             "use Gemini and Perplexity in my browser, "
             if use_browser_ai
-            else "research and consult advisors, "
+            else "research online, "
         )
+    )
+    _say(
+        "I will not stop until this is learned—I'll clarify what you mean, "
+        + research_mode
         + "and save a working protocol to my brain. No attempt limit.",
         "learn",
     )
@@ -171,10 +177,13 @@ def develop_skill_conversational(
             pass
 
         if use_web and not skip_browser_research:
-            _say(
-                f"Researching in my browser window: {query[:60]}…",
-                "research",
-            )
+            if use_free_web and not use_browser_ai:
+                _say(f"Searching the free web: {query[:60]}…", "research")
+            else:
+                _say(
+                    f"Researching in my browser window: {query[:60]}…",
+                    "research",
+                )
             try:
                 engine = str(cfg.get("web_search_engine") or "google")
                 profile_browser = "chrome"
@@ -202,7 +211,9 @@ def develop_skill_conversational(
 
         browser_advisors = [a for a in advisors if a.browser_site]
         api_advisors = [a for a in advisors if a.client and a.model]
-        ollama_advisors = [a for a in api_advisors if a.name == "ollama"] or api_advisors[:1]
+        primary_advisors = [
+            a for a in api_advisors if a.name in ("openclaw", "ollama")
+        ] or api_advisors[:1]
 
         need_browser = bool(browser_advisors) and (
             attempt == 1 or attempt % 2 == 1 or bool(last_error)
@@ -232,7 +243,7 @@ def develop_skill_conversational(
                 )
             time.sleep(step_pause)
 
-        codegen_advisor = ollama_advisors[0] if ollama_advisors else None
+        codegen_advisor = primary_advisors[0] if primary_advisors else None
         if codegen_advisor is None:
             codegen_advisor = next((a for a in advisors if a.client and a.model), None)
         time.sleep(pause)

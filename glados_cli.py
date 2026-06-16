@@ -147,39 +147,42 @@ GLADOS_ASK_SYSTEM = (
 def cmd_ask(question: str) -> int:
     cfg = load_config()
     try:
-        from openai import OpenAI
+        from glados_llm import create_llm_client, resolve_chat_model, completion_kwargs, is_openclaw
     except ImportError:
-        print("[!] openai package required.")
+        print("[!] glados_llm / openai package required.")
         return 1
 
-    client = OpenAI(api_key="ollama", base_url=cfg["ollama_base_url"])
+    client = create_llm_client(cfg)
+    model = resolve_chat_model(cfg)
     try:
         r = client.chat.completions.create(
-            model=cfg["model_name"],
+            model=model,
             messages=[
                 {"role": "system", "content": GLADOS_ASK_SYSTEM},
                 {"role": "user", "content": question},
             ],
             temperature=0.7,
+            **completion_kwargs(cfg),
         )
         text = (r.choices[0].message.content or "").strip()
         print(text)
         return 0
     except Exception as e:
-        installed = _ollama_installed_models(cfg)
-        want = cfg.get("model_name", "")
-        code = getattr(e, "status_code", None)
-        err_txt = str(e).lower()
-        if code == 404 or "not found" in err_txt or "404" in str(e):
-            print(f"[!] Model '{want}' is not available on this Ollama server (404).")
-            print(f"    On the machine running Ollama, run: ollama pull {want}")
-            if installed:
-                print(f"    Models already installed there: {', '.join(installed)}")
-                print("    Or set model_name in configs/glados.yaml (or MODEL_NAME) to one of those names.")
-            else:
-                print("    Ollama reported no models — pull any model you want to use first.")
-        else:
-            print(f"[!] ask failed: {e}")
+        if not is_openclaw(cfg):
+            installed = _ollama_installed_models(cfg)
+            want = cfg.get("model_name", "")
+            code = getattr(e, "status_code", None)
+            err_txt = str(e).lower()
+            if code == 404 or "not found" in err_txt or "404" in str(e):
+                print(f"[!] Model '{want}' is not available on this Ollama server (404).")
+                print(f"    On the machine running Ollama, run: ollama pull {want}")
+                if installed:
+                    print(f"    Models already installed there: {', '.join(installed)}")
+                    print("    Or set model_name in configs/glados.yaml (or MODEL_NAME) to one of those names.")
+                else:
+                    print("    Ollama reported no models — pull any model you want to use first.")
+                return 1
+        print(f"[!] ask failed: {e}")
         return 1
 
 

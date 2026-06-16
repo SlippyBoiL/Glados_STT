@@ -46,7 +46,11 @@ _TASK_HINTS = (
     "upload",
     "remember to",
     "learn how",
+    "learn about",
     "learn to",
+    "lets learn",
+    "let's learn",
+    "want you to learn",
     "figure out how",
     "do this for me",
     "do that for me",
@@ -144,7 +148,12 @@ def handle_task(
     try:
         from glados_skills.direct_actions import try_direct_action
 
-        direct_ok, direct_msg = try_direct_action(user_input, cfg or {}, think_fn=think_fn)
+        direct_ok, direct_msg = try_direct_action(
+            user_input,
+            cfg or {},
+            think_fn=think_fn,
+            telemetry_path=telemetry_path,
+        )
         if direct_ok is not None:
             if direct_ok and speak_fn:
                 speak_fn(direct_msg[:200])

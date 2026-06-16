@@ -56,6 +56,15 @@ def fetch_web_summary(query: str, timeout: float = 8.0) -> str:
     return "\n".join(lines)[:2500]
 
 
+def _use_free_web_scraper(cfg: Dict[str, Any]) -> bool:
+    mode = str(cfg.get("web_search_mode") or "").strip().lower()
+    return bool(cfg.get("skills_learn_use_free_web", True)) or mode in (
+        "duckduckgo_scrape",
+        "free",
+        "scrape",
+    )
+
+
 def research_for_learning(
     user_input: str,
     *,
@@ -68,6 +77,16 @@ def research_for_learning(
     cfg = cfg or {}
     query = (search_query or infer_search_query(user_input)).strip()
     parts = [f"Search query: {query}"]
+
+    if _use_free_web_scraper(cfg) and query:
+        try:
+            from glados_web.free_search import search_and_read_web
+
+            scraped = search_and_read_web(query, cfg=cfg)
+            parts.append("Free web scrape (DuckDuckGo + page read):\n" + scraped)
+            return query, "\n".join(parts)
+        except Exception as e:
+            parts.append(f"Free web scrape error: {e}")
 
     skip_tabs = bool(cfg.get("skills_learn_skip_search_tabs", True)) and bool(
         cfg.get("skills_learn_use_browser_ai", True)

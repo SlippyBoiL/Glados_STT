@@ -5,8 +5,6 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-import requests
-
 
 try:
     import chromadb  # type: ignore
@@ -18,24 +16,23 @@ class ChromaMemoryStore:
     """
     Optional ChromaDB-backed memory.
 
-    Uses Ollama embeddings (local-first) and a persisted ChromaDB collection.
+    Embeddings route through OpenClaw /v1/embeddings when llm_provider is openclaw
+    (or embedding_backend: openclaw). Legacy direct Ollama is kept for ollama-only setups.
 
     Config keys (from `glados_config.py`):
       - memory_enable_chroma: bool
       - chroma_persist_dir: str
       - chroma_collection: str
-      - embedding_backend: "ollama" (only supported backend in this implementation)
-      - embedding_model: e.g. "nomic-embed-text"
-      - ollama_base_url: e.g. "http://127.0.0.1:11434/v1"
+      - embedding_backend: "openclaw" | "ollama"
+      - embedding_model: e.g. "openclaw/default"
+      - llm_provider: "openclaw" (default)
     """
 
     def __init__(self, cfg: Dict[str, Any]) -> None:
+        self._cfg = cfg
         self._enabled = bool(cfg.get("memory_enable_chroma"))
         self._persist_dir = str(cfg.get("chroma_persist_dir") or "chroma_db")
         self._collection_name = str(cfg.get("chroma_collection") or "glados_memories")
-        self._embed_backend = str(cfg.get("embedding_backend") or "ollama").strip().lower()
-        self._embed_model = str(cfg.get("embedding_model") or "nomic-embed-text").strip()
-        self._ollama_base_url = str(cfg.get("ollama_base_url") or "http://127.0.0.1:11434/v1").strip()
         self.last_error: str = ""
 
         self._client = None
@@ -55,39 +52,27 @@ class ChromaMemoryStore:
             self._client = None
             self._collection = None
 
-    def _ollama_api_root(self) -> str:
-        # Config uses OpenAI-compat /v1. Embeddings use Ollama native /api/embeddings.
-        root = self._ollama_base_url.rstrip("/")
-        if root.endswith("/v1"):
-            root = root[: -len("/v1")]
-        return root
-
     def _embed_one(self, text: str) -> Optional[List[float]]:
-        if not text:
-            return None
-        if self._embed_backend != "ollama":
-            self.last_error = f"Unsupported embedding backend: {self._embed_backend}"
-            return None
-        try:
-            url = self._ollama_api_root() + "/api/embeddings"
-            resp = requests.post(
-                url,
-                json={"model": self._embed_model, "prompt": text},
-                timeout=20,
-            )
-            if resp.status_code != 200:
-                self.last_error = f"Ollama embeddings HTTP {resp.status_code}: {resp.text[:200]}"
-                return None
-            data = resp.json() or {}
-            emb = data.get("embedding")
-            if isinstance(emb, list) and emb and isinstance(emb[0], (int, float)):
-                self.last_error = ""
-                return [float(x) for x in emb]
-            self.last_error = "Ollama embeddings response missing 'embedding' vector"
-            return None
-        except Exception:
-            self.last_error = "Ollama embeddings request failed"
-            return None
+        from glados_llm import embed_texts
+
+        results = embed_texts(self._cfg, [text])
+        emb = results[0] if results else None
+        if emb is None:
+            from glados_llm import is_openclaw, use_openclaw_embeddings
+
+            if use_openclaw_embeddings(self._cfg) or is_openclaw(self._cfg):
+                self.last_error = (
+                    "OpenClaw embeddings failed. Check gateway is running and "
+                    "agents.defaults.memorySearch is configured in ~/.openclaw/openclaw.json "
+                    "(e.g. provider: local with @openclaw/llama-cpp-provider)."
+                )
+            else:
+                self.last_error = (
+                    "Ollama embeddings failed. Check ollama serve and embedding_model is pulled."
+                )
+        else:
+            self.last_error = ""
+        return emb
 
     def embed_many(self, texts: Sequence[str]) -> List[Optional[List[float]]]:
         return [self._embed_one(t) for t in texts]

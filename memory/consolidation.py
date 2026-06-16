@@ -10,6 +10,12 @@ _CHAT_NOISE = re.compile(
     re.IGNORECASE,
 )
 
+_STATUS_CHATTER = re.compile(
+    r"\b(are you learning|ready to learn|not responding|aren'?t responding|"
+    r"looks like you|assume you'?re ready|you there|still there|no response)\b",
+    re.IGNORECASE,
+)
+
 _SUBSTANTIVE_HINTS = (
     "prefer",
     "remember",
@@ -28,24 +34,97 @@ _SUBSTANTIVE_HINTS = (
     "i use",
     "i like",
     "my ",
+    "learn about",
+    "learn how",
+    "organize",
+)
+
+_REJECT_FACT = re.compile(
+    r"anonymous|remains anonymous|did not provide any personal|"
+    r"user(?:'s)? name (?:is|remains) glados|referred to as .?glados|"
+    r"user is glados|genetic lifeform|"
+    r"no permanent actions|does not take any permanent|nothing permanent|"
+    r"preference is evident in their action of asking|"
+    r"automated name generation|represented by the system|"
+    r"notification sound|interaction event|explicit user preference",
+    re.IGNORECASE,
 )
 
 
 def worth_consolidating(user_input: str, system_logs: str, glados_response: str) -> bool:
     """Fast filter — skip obvious chatter before spending an LLM call."""
     logs = (system_logs or "").strip()
-    if logs:
-        return True
     ui = (user_input or "").strip()
     if not ui or _CHAT_NOISE.match(ui):
         return False
     low = ui.lower()
+    if ui.endswith("?") and not logs:
+        return False
+    if _STATUS_CHATTER.search(low) and not logs:
+        return False
+    if logs:
+        return True
     if any(h in low for h in _SUBSTANTIVE_HINTS):
         return True
-    if len(ui) < 18:
+    return False
+
+
+def _rule_based_fact(user_input: str, system_logs: str) -> Optional[str]:
+    """Deterministic facts from known OS actions — avoids 1B model hallucinations."""
+    ui = (user_input or "").strip()
+    low = ui.lower()
+    logs = (system_logs or "").strip()
+    logs_low = logs.lower()
+
+    if "git push succeeded" in logs_low or ("push" in low and "github" in low and "succeeded" in logs_low):
+        return "User asked Glados to commit and push the Glados project to GitHub."
+
+    m = re.search(r"\bopened\s+([a-z0-9 _.-]+)", logs_low)
+    if m and "could not" not in logs_low:
+        target = m.group(1).strip(" .")
+        if target and target not in ("the application", "that target"):
+            return f"User asked Glados to open {target} on this PC."
+
+    if "could not open" in logs_low or "could not find" in logs_low:
+        m = re.search(r"could not (?:open|find)\s+([a-z0-9 _.-]+)", logs_low)
+        if m:
+            return f"User tried to open {m.group(1).strip()} but it was not found on this PC."
+
+    if any(p in low for p in ("learn about", "learn how", "learn to", "want you to learn", "lets learn")):
+        topic = re.sub(
+            r"^.*?(?:learn(?:\s+about|\s+how\s+to|\s+to)?|want you to learn)\s+",
+            "",
+            low,
+            count=1,
+        ).strip(" .?!")
+        if topic and len(topic) > 8:
+            return f"User asked Glados to learn about: {topic[:200]}."
+
+    if "learned" in logs_low or "protocol" in logs_low or "skill_learned" in logs_low:
+        if any(p in low for p in ("learn how", "learn about", "learn to")):
+            topic = re.sub(
+                r"^.*?(?:learn(?:\s+about|\s+how\s+to|\s+to)?)\s+",
+                "",
+                low,
+                count=1,
+            ).strip(" .?!")
+            if topic and len(topic) > 8:
+                return f"Glados completed a learn task for: {topic[:200]}."
+
+    if "organize" in low and ("download" in low or "folder" in low):
+        return "User asked Glados to organize their Downloads folder(s)."
+
+    return None
+
+
+def _accept_fact(fact: str) -> bool:
+    if not fact or len(fact) < 10:
         return False
-    resp = (glados_response or "").strip()
-    return len(resp) > 40
+    if "IGNORE" in fact.upper():
+        return False
+    if _REJECT_FACT.search(fact):
+        return False
+    return True
 
 
 def _clean_extracted_fact(raw: str) -> str:
@@ -78,6 +157,21 @@ def consolidate_episodic_memory(
         return None
 
     min_len = int(cfg.get("memory_consolidation_min_fact_len") or 10)
+    rule_fact = _rule_based_fact(user_input, system_logs)
+    if rule_fact and _accept_fact(rule_fact) and len(rule_fact) >= min_len:
+        from memory.interface import add_memory_event
+
+        add_memory_event(
+            {
+                "event_type": "episodic_fact",
+                "text": rule_fact,
+                "source": "self_evolution",
+                "ts": time.time(),
+            },
+            cfg,
+        )
+        print(f"[BRAIN] Integrated memory: {rule_fact}")
+        return rule_fact
     context = (
         "Interaction Event:\n"
         f"- User Said: {(user_input or '')[:500]}\n"
@@ -85,10 +179,12 @@ def consolidate_episodic_memory(
         f"- GLaDOS Response: {(glados_response or '')[:800]}"
     )
     prompt = (
-        "Analyze this interaction and extract any permanent facts about the user, "
-        "their preferences, or system states.\n"
-        "Format as a single concise declarative sentence. "
-        "If nothing permanent occurred, reply with exactly: IGNORE\n\n"
+        "Extract ONE permanent fact about the human user or a concrete system event.\n"
+        "Rules:\n"
+        "- The assistant is GLaDOS; never call the user GLaDOS.\n"
+        "- Do not invent names, preferences, or psychology.\n"
+        "- Prefer facts like apps opened, folders opened, git pushes, or explicit user preferences.\n"
+        "- If nothing concrete happened, reply exactly: IGNORE\n\n"
         f"Context:\n{context}\n\nFact:"
     )
 
@@ -106,7 +202,7 @@ def consolidate_episodic_memory(
         return None
 
     fact = _clean_extracted_fact(raw)
-    if not fact or "IGNORE" in fact.upper() or len(fact) < min_len:
+    if not _accept_fact(fact) or len(fact) < min_len:
         return None
 
     from memory.interface import add_memory_event
