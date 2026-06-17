@@ -267,6 +267,7 @@ def build_state(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
     computer = load_computer_brain_memories()
     facility_scan = latest_event(events, "facility_scan")
+    last_thinking = latest_event(events, "thinking")
     file_index_meta: Dict[str, Any] = {"file_count": 0}
     fi_path = os.path.join(REPO_ROOT, "data", "facility_file_index.json")
     if os.path.isfile(fi_path):
@@ -297,6 +298,14 @@ def build_state(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "last_skills_matched": skills.get("payload") if skills else None,
         "last_code_executed": executed.get("payload") if executed else None,
         "last_monitor_alert": monitor.get("payload") if monitor else None,
+        "last_thinking": last_thinking.get("payload") if last_thinking else None,
+        "llm_config": {
+            "provider": str(cfg.get("llm_provider") or "openclaw"),
+            "model": str(cfg.get("openclaw_model") or cfg.get("model_name") or ""),
+            "vision_model": str(cfg.get("vision_model") or ""),
+            "embedding_backend": str(cfg.get("embedding_backend") or ""),
+        },
+        "skills_count": len(load_skills(cfg)),
         "subsystem_flags": flags,
         "event_count": len(events),
     }

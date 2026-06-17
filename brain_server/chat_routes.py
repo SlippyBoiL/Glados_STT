@@ -29,15 +29,46 @@ class ChatSendBody(BaseModel):
 
 @router.post("/send")
 def chat_send(body: ChatSendBody) -> Dict[str, Any]:
+    return _dispatch_user_prompt(body.text, source="hud")
+
+
+@router.post("/prompt")
+def user_text_prompt(body: ChatSendBody) -> Dict[str, Any]:
+    """Manual override bar — typed command to Swarm Manager (no STT)."""
+    return _dispatch_user_prompt(body.text, source="hud_manual")
+
+
+def _dispatch_user_prompt(text: str, *, source: str) -> Dict[str, Any]:
     cfg = load_config()
-    text = body.text.strip()
+    text = (text or "").strip()
     msg_id = enqueue_user_message(text, cfg)
     if not msg_id:
-        return {"ok": False, "error": "empty message"}
+        return {"ok": False, "error": "empty message or inbox busy"}
+    _telemetry_log(
+        cfg,
+        "user_text_prompt",
+        {
+            "text": text,
+            "source": source,
+            "agent_id": "MANAGER",
+            "id": msg_id,
+        },
+    )
+    _telemetry_log(
+        cfg,
+        "swarm_telemetry",
+        {
+            "agent_id": "MANAGER",
+            "status": "thinking",
+            "message": text,
+            "current_subtask": f"Manual override: {text[:120]}",
+            "source": source,
+        },
+    )
     _telemetry_log(
         cfg,
         "hud_chat",
-        {"role": "user", "text": text, "source": "hud", "id": msg_id, "pending": True},
+        {"role": "user", "text": text, "source": source, "id": msg_id, "pending": True},
     )
     return {"ok": True, "id": msg_id}
 
@@ -46,11 +77,18 @@ def chat_send(body: ChatSendBody) -> Dict[str, Any]:
 def chat_history(limit: int = 150) -> Dict[str, Any]:
     cfg = load_config()
     from glados_paths import resolve_plugins_dir
+    from glados_hud.chat_bridge import history_path, read_session
 
+    session = read_session(cfg)
     messages = read_history(limit=limit, cfg=cfg)
+    session_ts = float(session.get("session_started_at") or 0)
+    if session_ts > 0:
+        messages = [m for m in messages if float(m.get("ts") or 0) >= session_ts - 0.001]
     return {
         "messages": messages,
         "count": len(messages),
-        "history_path": __import__("glados_hud.chat_bridge", fromlist=["history_path"]).history_path(cfg),
+        "session": session,
+        "session_started_at": session_ts or None,
+        "history_path": history_path(cfg),
         "plugins_dir": resolve_plugins_dir(cfg),
     }

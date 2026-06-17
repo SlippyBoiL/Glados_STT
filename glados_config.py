@@ -91,6 +91,7 @@ def load_config() -> Dict[str, Any]:
         "os_control_enabled": False,
         # Facility Brain (separate scan + decision file — configs/facility_brain.yaml)
         "facility_brain_enabled": True,
+        "clear_chat_on_startup": True,
         "facility_brain_config_path": os.path.join(REPO_ROOT, "configs", "facility_brain.yaml"),
         "skills_brain_path": os.path.join(REPO_ROOT, "data", "glados_skills_brain.json"),
         "skills_self_develop": True,
@@ -108,6 +109,12 @@ def load_config() -> Dict[str, Any]:
         "skills_learn_pause_sec": 2.0,
         "skills_learn_step_pause_sec": 6.0,
         "skills_learn_use_browser_ai": False,
+        "browser_agent_enabled": True,
+        "browser_agent_headless": False,
+        "browser_agent_max_steps": 20,
+        "browser_agent_slow_mo_ms": 80,
+        "browser_agent_channel": "chrome",
+        "browser_agent_profile_dir": os.path.join(REPO_ROOT, "data", "glados_playwright_profile"),
         "idle_epiphany_enabled": True,
         "idle_epiphany_minutes": 5.0,
         "idle_epiphany_poll_sec": 30.0,
@@ -215,6 +222,9 @@ def load_config() -> Dict[str, Any]:
     _deep_set(cfg, "gemini_base_url", os.environ.get("GEMINI_BASE_URL"))
     _deep_set(cfg, "skills_learn_unlimited_attempts", os.environ.get("GLADOS_SKILLS_UNLIMITED"))
     _deep_set(cfg, "skills_learn_use_browser_ai", os.environ.get("GLADOS_SKILLS_BROWSER_AI"))
+    _deep_set(cfg, "browser_agent_enabled", os.environ.get("GLADOS_BROWSER_AGENT_ENABLED"))
+    _deep_set(cfg, "browser_agent_headless", os.environ.get("GLADOS_BROWSER_AGENT_HEADLESS"))
+    _deep_set(cfg, "browser_agent_max_steps", os.environ.get("GLADOS_BROWSER_AGENT_MAX_STEPS"))
     _deep_set(cfg, "skills_learn_use_ai_council", os.environ.get("GLADOS_SKILLS_USE_AI_COUNCIL"))
     _deep_set(cfg, "skills_learn_reuse_browser", os.environ.get("GLADOS_SKILLS_REUSE_BROWSER"))
     _deep_set(cfg, "skills_learn_use_web", os.environ.get("GLADOS_SKILLS_LEARN_USE_WEB"))

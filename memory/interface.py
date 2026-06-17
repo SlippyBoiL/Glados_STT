@@ -119,6 +119,22 @@ def retrieve_memory_context(
         pass
 
     if not parts:
+        pass  # may still get shared brain hits below
+
+    # Shared swarm brain (cross-agent Chroma insights)
+    try:
+        from plugins.shared_memory import query_brain_context  # type: ignore
+    except Exception:
+        try:
+            from shared_memory import query_brain_context  # type: ignore
+        except Exception:
+            query_brain_context = None  # type: ignore
+    if query_brain_context:
+        shared_block = query_brain_context(user_input, limit=top_k)
+        if shared_block:
+            parts.append(shared_block)
+
+    if not parts:
         return "No relevant memory found. Run a facility scan to populate the computer brain."
     return "\n".join(parts)
 

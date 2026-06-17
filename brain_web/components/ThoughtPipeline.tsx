@@ -1,142 +1,68 @@
 "use client";
 
-import { motion, AnimatePresence } from "framer-motion";
+import { useMemo } from "react";
 import type { TelemetryEvent } from "@/lib/types";
-
-type Stage = {
-  key: string;
-  label: string;
-  className: string;
-  content: string;
-  ts?: number;
-};
-
-function buildStages(events: TelemetryEvent[]): Stage[] {
-  const recent = events.slice(-30);
-  const byType: Record<string, TelemetryEvent | undefined> = {};
-  for (const ev of [...recent].reverse()) {
-    if (!byType[ev.event_type]) byType[ev.event_type] = ev;
-  }
-
-  const stages: Stage[] = [];
-
-  const heard = byType.heard;
-  if (heard) {
-    stages.push({
-      key: "heard",
-      label: "Heard",
-      className: "stage-hearing",
-      content: String(heard.payload?.text || ""),
-      ts: heard.ts,
-    });
-  }
-
-  const intent = byType.intent_classified;
-  if (intent) {
-    stages.push({
-      key: "intent",
-      label: "Intent",
-      className: "stage-intent",
-      content: `${intent.payload?.category || "?"} — ${Number(intent.payload?.confidence || 0).toFixed(1)}%`,
-      ts: intent.ts,
-    });
-  }
-
-  const memory = byType.memory_retrieved;
-  if (memory) {
-    const ctx = String(memory.payload?.context || "");
-    const lines = ctx.split("\n").filter(Boolean).length;
-    stages.push({
-      key: "memory",
-      label: "Memory",
-      className: "stage-memory",
-      content: lines ? `${lines} context line(s) retrieved` : "No memory hit",
-      ts: memory.ts,
-    });
-  }
-
-  const skills = byType.skills_matched;
-  if (skills) {
-    const list = (skills.payload?.skills as { file: string }[]) || [];
-    stages.push({
-      key: "skills",
-      label: "Skills",
-      className: "stage-intent",
-      content: list.length
-        ? list.map((s) => s.file).join(", ")
-        : "No protocol match",
-      ts: skills.ts,
-    });
-  }
-
-  const llm = byType.llm_response;
-  if (llm) {
-    const text = String(llm.payload?.text || "").slice(0, 280);
-    stages.push({
-      key: "llm",
-      label: "LLM",
-      className: "stage-reason",
-      content: text + (String(llm.payload?.text || "").length > 280 ? "…" : ""),
-      ts: llm.ts,
-    });
-  }
-
-  const exec = byType.code_executed;
-  if (exec) {
-    stages.push({
-      key: "exec",
-      label: "Execute",
-      className: "stage-action",
-      content: String(exec.payload?.output_preview || "").slice(0, 200),
-      ts: exec.ts,
-    });
-  }
-
-  return stages;
-}
+import { buildThoughtTimeline } from "@/lib/hudState";
 
 type Props = {
   events: TelemetryEvent[];
 };
 
+const phaseClass: Record<string, string> = {
+  heard: "stage-hearing",
+  facility: "stage-memory",
+  intent: "stage-intent",
+  memory: "stage-memory",
+  skills: "stage-intent",
+  llm: "stage-reason",
+  execute: "stage-action",
+  learn: "stage-intent",
+  speak: "stage-reason",
+};
+
 export function ThoughtPipeline({ events }: Props) {
-  const stages = buildStages(events);
+  const timeline = useMemo(() => buildThoughtTimeline(events).slice(-12), [events]);
 
   return (
     <div className="panel p-4">
       <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-aperture-muted">
-        Thought Pipeline
+        Live cognition (chronological)
       </h2>
-      {stages.length === 0 ? (
+      {timeline.length === 0 ? (
         <p className="text-sm text-aperture-muted">
-          Waiting for Glados to think…
+          Waiting for Glados to think… open the{" "}
+          <a href="/hud/" className="text-aperture-orange underline">
+            Command Center
+          </a>{" "}
+          to chat and watch thoughts stream in.
         </p>
       ) : (
-        <div className="space-y-3">
-          <AnimatePresence mode="popLayout">
-            {stages.map((s, i) => (
-              <motion.div
-                key={s.key}
-                initial={{ opacity: 0, x: -12 }}
-                animate={{ opacity: 1, x: 0 }}
-                className={`rounded border-l-4 bg-black/20 px-3 py-2 ${s.className}`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-bold uppercase text-aperture-orange">
-                    {i + 1}. {s.label}
-                  </span>
-                  {s.ts ? (
-                    <span className="font-mono text-[10px] text-aperture-muted">
-                      {new Date(s.ts * 1000).toLocaleTimeString()}
-                    </span>
-                  ) : null}
-                </div>
-                <p className="mt-1 whitespace-pre-wrap break-words text-sm">
-                  {s.content}
+        <div className="space-y-2">
+          {timeline.map((step, i) => (
+            <div
+              key={`${step.ts}-${i}`}
+              className={`rounded border-l-4 bg-black/20 px-3 py-2 ${
+                phaseClass[step.phase] || "stage-reason"
+              } ${step.active ? "ring-1 ring-aperture-orange/40" : ""}`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold uppercase text-aperture-orange">
+                  {step.phase}
+                </span>
+                <span className="font-mono text-[10px] text-aperture-muted">
+                  {step.time}
+                </span>
+              </div>
+              <p className="mt-1 whitespace-pre-wrap break-words text-sm">
+                {step.message}
+              </p>
+              {step.detail ? (
+                <p className="mt-1 font-mono text-[10px] text-aperture-muted">
+                  {step.detail.slice(0, 160)}
                 </p>
-              </motion.div>
-            ))}
-          </AnimatePresence>
+              ) : null}
+            </div>
+          ))}
         </div>
       )}
     </div>

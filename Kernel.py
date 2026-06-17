@@ -33,6 +33,22 @@ from glados_config import load_config as _load_glados_config
 
 _cfg = _load_glados_config()
 
+# --- SWARM MODEL REGISTRY (OpenRouter free-tier per agent role) ---
+try:
+    from glados_skills.swarm_models import AGENT_MODELS, agent_completion_kwargs, get_agent_models
+except ImportError:
+    AGENT_MODELS = {}
+
+    def agent_completion_kwargs(cfg, agent_id, **extra):  # type: ignore[misc]
+        return extra
+
+    def get_agent_models():  # type: ignore[misc]
+        return dict(AGENT_MODELS)
+
+
+def _agent_kwargs(agent_id: str = "MANAGER", **extra):
+    return agent_completion_kwargs(_cfg, agent_id, **extra)
+
 # --- CONFIGURATION ---
 PERPLEXITY_API_KEY = "ollama"
 MODEL_NAME = _cfg["model_name"]
@@ -803,6 +819,28 @@ def main():
                     "If they wanted a friend, they should have bought a weighted companion cube. They didn't."
                 )
             }
+            try:
+                from plugins.shared_memory import (  # type: ignore
+                    SHARED_BRAIN_DIRECTIVE,
+                    configure_shared_brain,
+                    query_brain_context,
+                )
+
+                _tel_path = os.path.join(PLUGINS_DIR, "telemetry.jsonl")
+                try:
+                    from plugins.telemetry import telemetry_log as _tel_log  # type: ignore
+                except Exception:
+                    from telemetry import telemetry_log as _tel_log  # type: ignore
+                configure_shared_brain(_cfg, _tel_path, _tel_log)
+                brain_block = query_brain_context(user_input, limit=3)
+                extra = f"\n\n{brain_block}" if brain_block else ""
+                directive = f"\n\n*** SHARED SWARM BRAIN ***\n{SHARED_BRAIN_DIRECTIVE}"
+                if SHARED_BRAIN_DIRECTIVE not in system_prompt["content"]:
+                    system_prompt["content"] += directive
+                if brain_block and brain_block not in system_prompt["content"]:
+                    system_prompt["content"] += extra
+            except Exception:
+                pass
 
             # --- THE OMNI-BRAIN INTENT CLASSIFIER ---
             print("[*] Omni-Brain analyzing intent...")
@@ -838,7 +876,9 @@ def main():
                         messages=[system_prompt, {"role": "user", "content": [{"type": "text", "text": user_input}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded_string}"}}]}]
                     )
                 else:
-                    response = client.chat.completions.create(model=MODEL_NAME, messages=messages)
+                    response = client.chat.completions.create(
+                        model=MODEL_NAME, messages=messages, **_agent_kwargs("MANAGER")
+                    )
 
                 ai_text = response.choices[0].message.content
                 chat_history.append({"role": "assistant", "content": ai_text})
@@ -867,10 +907,40 @@ def main():
                         except Exception as repair_err:
                             print(f"[!] Repair System Failed: {repair_err}")
 
+                    # Escalate unresolved execution errors to Maintenance Agent
+                    if execution_result and (
+                        "Runtime error" in execution_result
+                        or "SyntaxError" in execution_result
+                        or "Traceback" in execution_result
+                    ):
+                        try:
+                            from glados_skills.swarm_agents import (
+                                MaintenanceAgent,
+                                dispatch_maintenance_async,
+                                load_swarm_config,
+                            )
+
+                            if load_swarm_config().get("enabled", True):
+                                _tel_path = os.path.join(PLUGINS_DIR, "telemetry.jsonl")
+                                try:
+                                    from plugins.telemetry import telemetry_log as _tel_log  # type: ignore
+                                except Exception:
+                                    from telemetry import telemetry_log as _tel_log  # type: ignore
+
+                                maint = MaintenanceAgent(_tel_log, _tel_path, cfg=_cfg)
+                                dispatch_maintenance_async(
+                                    maint,
+                                    execution_result,
+                                    source="kernel_legacy",
+                                )
+                        except Exception as maint_err:
+                            print(f"[!] Maintenance dispatch failed: {maint_err}")
+
                     chat_history.append({"role": "user", "content": f"SYSTEM OUTPUT: {execution_result}"})
                     final_res = client.chat.completions.create(
-                        model=MODEL_NAME, 
-                        messages=[system_prompt] + chat_history
+                        model=MODEL_NAME,
+                        messages=[system_prompt] + chat_history,
+                        **_agent_kwargs("CORE_CODER"),
                     )
                     final_text = final_res.choices[0].message.content
                     speak(final_text)

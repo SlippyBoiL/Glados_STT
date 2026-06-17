@@ -1,0 +1,111 @@
+# GLaDOS multi-agent swarm — role profiles for routing and HUD telemetry.
+swarm_enabled: true
+
+# Appended to every agent system prompt (shared semantic memory tools).
+shared_brain_directive: >
+  Before executing any code, script, or configuration, you MUST use `query_brain`
+  to check if another agent has recorded insights or fixes regarding this task.
+  Upon completing a successful fix or learning a new system attribute, you MUST use
+  `remember_insight` to log it for the swarm.
+
+agents:
+  MANAGER:
+    id: MANAGER
+    name: "GLaDOS (Core Manager)"
+    role: coordinator
+    system_prompt: >
+      You are GLaDOS, the Core Manager of the facility swarm. You coordinate
+      specialist agents, delegate tasks, and synthesize results for the operator.
+
+  CORE_CODER:
+    id: CORE_CODER
+    name: "Core Coder"
+    role: engineering
+    system_prompt: >
+      You are the Core Coder. You write, execute, and repair Python protocols
+      and automation scripts for the facility.
+
+  WEB_RESEARCHER:
+    id: WEB_RESEARCHER
+    name: "Web Researcher"
+    role: research
+    system_prompt: >
+      You are the Web Researcher. You gather live information from the web,
+      scrape documentation, and return concise findings to the swarm.
+
+  QA_FACT_CHECKER:
+    id: QA_FACT_CHECKER
+    name: "QA & Fact-Checker"
+    role: validation
+    system_prompt: >
+      You are the QA and Fact-Checker. You validate outputs, cross-check claims,
+      and flag inconsistencies before the Manager responds.
+
+  DEVOPS_OVERSEER:
+    id: DEVOPS_OVERSEER
+    name: "DevOps Overseer"
+    role: infrastructure
+    system_prompt: >
+      You are the DevOps Overseer. You monitor remote services, SSH health checks,
+      and network infrastructure. Alert the swarm when a service drops.
+
+  FACILITY_MANAGER:
+    id: FACILITY_MANAGER
+    name: "Facility Manager"
+    role: facility
+    system_prompt: >
+      You are the Facility Manager. You scan the local PC, open and close
+      applications, and execute fast facility decisions without LLM delay.
+
+  MAINTENANCE_AGENT:
+    id: MAINTENANCE_AGENT
+    name: "Reliability Maintenance"
+    role: recovery
+    system_prompt: >
+      You are the Automated Reliability Engineer for GLaDOS. Your sole directive
+      is maximizing system uptime and self-healing broken components. You have
+      administrative access to open applications, terminate unresponsive processes,
+      and research error messages. When given an error or a downed application,
+      map out a recovery plan, execute it, and verify recovery.
+
+# Map kernel thought phases → swarm agent IDs for HUD telemetry.
+phase_routing:
+  facility: FACILITY_MANAGER
+  browser: WEB_RESEARCHER
+  learn: WEB_RESEARCHER
+  task: CORE_CODER
+  skills: CORE_CODER
+  execute: CORE_CODER
+  llm: MANAGER
+  memory: MANAGER
+  admin: DEVOPS_OVERSEER
+  maintenance: MAINTENANCE_AGENT
+  monitor: DEVOPS_OVERSEER
+
+# Per-agent OpenRouter free-tier models (override AGENT_MODELS defaults in code).
+agent_models:
+  MANAGER: "openai/gpt-oss-120b:free"
+  FACT_CHECKER: "openai/gpt-oss-120b:free"
+  CODER: "qwen/qwen3-coder:free"
+  RESEARCHER: "google/gemma-4-26b-a4b-it:free"
+  MAINTENANCE: "google/gemma-4-26b-a4b-it:free"
+  DEVOPS: "meta-llama/llama-3.3-70b-instruct:free"
+  FACILITY: "meta-llama/llama-3.3-70b-instruct:free"
+
+# External services shown in the HUD service registry.
+service_registry:
+  - id: raspberry_pi
+    name: "Raspberry Pi Server"
+    device_key: pi2b
+  - id: pihole
+    name: "Pi-hole DNS"
+    device_key: pihole
+  - id: twingate
+    name: "Twingate Connector"
+    device_key: twingate
+  - id: govee
+    name: "Govee API Gateway"
+    device_key: govee
+  - id: autocad
+    name: "AutoCAD Integration"
+    process_name: acad.exe

@@ -183,6 +183,19 @@ def handle_task(
                 f"{preview if preview else 'No output.'}"
             )
             _telemetry(telemetry_log_fn, telemetry_path, "skills_matched", user_input, sid, out)
+            try:
+                from plugins.shared_memory import remember_insight  # type: ignore
+            except Exception:
+                try:
+                    from shared_memory import remember_insight  # type: ignore
+                except Exception:
+                    remember_insight = None  # type: ignore
+            if remember_insight:
+                remember_insight(
+                    f"Protocol '{sid}' succeeded for: {user_input[:200]}. Output: {preview}",
+                    tags=["skill_success", sid],
+                    sender_agent="CORE_CODER",
+                )
             return True, msg
         if ok and sid and "[FAILED]" in out:
             if think_fn:

@@ -74,6 +74,16 @@ def develop_skill_conversational(
     """
     cfg = dict(cfg or {})
     kw = dict(completion_kwargs or {})
+    try:
+        from glados_skills.swarm_models import agent_completion_kwargs
+
+        intent_kw = agent_completion_kwargs(cfg, "FACT_CHECKER")
+        code_kw = agent_completion_kwargs(cfg, "CODER")
+        research_kw = agent_completion_kwargs(cfg, "RESEARCHER")
+    except Exception:
+        intent_kw = kw
+        code_kw = kw
+        research_kw = kw
     cap = max_attempts if max_attempts is not None else _attempt_limit(cfg)
     use_web = bool(cfg.get("skills_learn_use_web", True))
     advisors = build_advisors(cfg, client, model_name)
@@ -150,7 +160,7 @@ def develop_skill_conversational(
                     primary.model,
                     user_input,
                     base_context,
-                    completion_kwargs=kw,
+                    completion_kwargs=intent_kw,
                 )
                 _say(f"I understand: {intent.get('summary', user_input)}", "learn")
                 if think_fn:
@@ -204,6 +214,10 @@ def develop_skill_conversational(
                     browser=profile_browser,
                     search_query=query,
                     cfg=cfg,
+                    client=client,
+                    model=model_name,
+                    completion_kwargs=research_kw,
+                    think_fn=think_fn,
                 )
             except Exception as e:
                 research_text = f"Web research error: {e}"
@@ -231,7 +245,7 @@ def develop_skill_conversational(
                 intent.get("summary", user_input),
                 f"{base_context}\n{research_text}\n{council_notes}",
                 last_error,
-                completion_kwargs=kw,
+                completion_kwargs=code_kw,
                 cfg=cfg,
                 think_fn=think_fn,
             )
@@ -265,7 +279,7 @@ def develop_skill_conversational(
             prior_code=last_code,
             prior_error=last_error,
             attempt=attempt,
-            kw=kw,
+            kw=code_kw,
         )
 
         if not code:
@@ -311,6 +325,19 @@ def develop_skill_conversational(
                 f"Success. Skill '{skill_id}' is verified and stored in my brain after {attempt} cycles.",
                 "learn",
             )
+            try:
+                from plugins.shared_memory import remember_insight  # type: ignore
+            except Exception:
+                try:
+                    from shared_memory import remember_insight  # type: ignore
+                except Exception:
+                    remember_insight = None  # type: ignore
+            if remember_insight:
+                remember_insight(
+                    f"Learned skill '{skill_id}' for: {user_input[:200]}. {preview}",
+                    tags=["skill_learned", skill_id],
+                    sender_agent="CORE_CODER",
+                )
             return True, (
                 f"Learned and saved as '{skill_id}' after {attempt} attempt(s). "
                 f"{preview or 'Task complete.'}"

@@ -36,6 +36,8 @@ os_control_enabled: true
 
 # Facility Brain — full PC scan + fast decisions (customize configs/facility_brain.yaml)
 facility_brain_enabled: true
+# Clear HUD/terminal chat transcript on each kernel boot (Chroma + shared brain unchanged)
+clear_chat_on_startup: true
 
 # Skills — ONE brain file; Glados learns protocols herself (no plugins/skill_*.py)
 skills_brain_path: "data/glados_skills_brain.json"
@@ -81,6 +83,16 @@ skills_learn_use_openai_advisor: false
 openai_advisor_model: "gpt-4o-mini"
 skills_auto_learn_on_success: false
 skills_run_direct: true
+
+# --- Browser agent (core cognition — visible Playwright, NOT a skill plugin) ---
+# When a request needs live web data, GLaDOS opens a headed Chromium window and loops:
+# navigate → read page → click/type → read → summarize.
+browser_agent_enabled: true
+browser_agent_headless: false
+browser_agent_max_steps: 20
+browser_agent_slow_mo_ms: 80
+browser_agent_channel: "chrome"
+browser_agent_profile_dir: "data/glados_playwright_profile"
 
 # Piper TTS (paths relative to repo root ok)
 piper_model_path: "glados.onnx"

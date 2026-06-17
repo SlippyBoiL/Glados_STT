@@ -66,7 +66,28 @@ async def lifespan(app: FastAPI):
     _broadcaster = TelemetryBroadcaster(path)
     _broadcaster.set_loop(asyncio.get_running_loop())
     _broadcaster.start_watcher()
+
+    async def _metrics_loop() -> None:
+        """Broadcast host metrics as system_metrics telemetry events."""
+        try:
+            from plugins.telemetry import system_metrics_log  # type: ignore
+        except Exception:
+            try:
+                from telemetry import system_metrics_log  # type: ignore
+            except Exception:
+                return
+
+        while True:
+            try:
+                metrics = get_system_metrics()
+                system_metrics_log(path, metrics)
+            except Exception:
+                pass
+            await asyncio.sleep(3.0)
+
+    metrics_task = asyncio.create_task(_metrics_loop())
     yield
+    metrics_task.cancel()
 
 
 app = FastAPI(title="Glados Brain Dashboard API", lifespan=lifespan)
@@ -182,7 +203,7 @@ async def ws_live(websocket: WebSocket):
 
     _broadcaster.register(websocket)
     try:
-        events = read_telemetry_tail(telemetry_path(cfg), limit=50)
+        events = read_telemetry_tail(telemetry_path(cfg), limit=200)
         for ev in events:
             await websocket.send_json(ev)
         while True:

@@ -73,10 +73,33 @@ def research_for_learning(
     browser: str = "default",
     search_query: str | None = None,
     cfg: Dict[str, Any] | None = None,
+    client: Any = None,
+    model: str = "",
+    completion_kwargs: Dict[str, Any] | None = None,
+    think_fn: Any = None,
 ) -> Tuple[str, str]:
     cfg = cfg or {}
     query = (search_query or infer_search_query(user_input)).strip()
     parts = [f"Search query: {query}"]
+
+    # Core browser agent — visible Playwright loop (preferred over silent scrape)
+    if bool(cfg.get("browser_agent_enabled", True)) and client and model:
+        try:
+            from glados_browser.agent_loop import run_browser_agent_turn
+
+            result = run_browser_agent_turn(
+                user_input,
+                client,
+                model,
+                cfg,
+                think_fn=think_fn,
+                completion_kwargs=completion_kwargs or {},
+            )
+            if result.handled and result.message:
+                parts.append("Visible browser research:\n" + result.message)
+                return query, "\n".join(parts)
+        except Exception as e:
+            parts.append(f"Browser agent research error: {e}")
 
     if _use_free_web_scraper(cfg) and query:
         try:

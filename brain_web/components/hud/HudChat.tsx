@@ -4,24 +4,31 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type ChatMessage } from "@/lib/api";
 import type { TelemetryEvent } from "@/lib/types";
 
-function telemetryToMessages(events: TelemetryEvent[]): ChatMessage[] {
+function sessionCutoffFromEvents(events: TelemetryEvent[]): number {
+  let cutoff = 0;
+  for (const ev of events) {
+    if (ev.event_type !== "chat_session_reset") continue;
+    const ts = Number(ev.payload?.session_started_at ?? ev.ts);
+    if (ts > cutoff) cutoff = ts;
+  }
+  return cutoff;
+}
+
+function filterBySession(messages: ChatMessage[], cutoff: number): ChatMessage[] {
+  if (cutoff <= 0) return messages;
+  return messages.filter((m) => (m.ts || 0) >= cutoff - 0.001);
+}
+
+function telemetryToMessages(events: TelemetryEvent[], sessionCutoff = 0): ChatMessage[] {
   const out: ChatMessage[] = [];
   for (const ev of events) {
+    if (sessionCutoff > 0 && ev.ts < sessionCutoff - 0.001) continue;
     const p = ev.payload || {};
     if (ev.event_type === "hud_chat") {
       const role = p.role as string | undefined;
       const text = String(p.text || "").trim();
       if (!text) continue;
-      if (role === "thinking") {
-        out.push({
-          id: `think-${ev.ts}-${text.slice(0, 16)}`,
-          role: "thinking",
-          text,
-          ts: ev.ts,
-          phase: String(p.phase || ""),
-        });
-        continue;
-      }
+      if (role === "thinking") continue;
       if (role !== "user" && role !== "assistant") continue;
       out.push({
         id: String(p.id || `${ev.ts}-${role}-${text.slice(0, 24)}`),
@@ -98,26 +105,50 @@ function mergeMessages(
 
 export function HudChat({ events }: { events: TelemetryEvent[] }) {
   const [history, setHistory] = useState<ChatMessage[]>([]);
+  const [sessionCutoff, setSessionCutoff] = useState(0);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [apiOk, setApiOk] = useState<boolean | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const liveFromWs = useMemo(() => telemetryToMessages(events), [events]);
+  const wsSessionCutoff = useMemo(
+    () => sessionCutoffFromEvents(events),
+    [events],
+  );
+  const effectiveCutoff = Math.max(sessionCutoff, wsSessionCutoff);
+
+  const liveFromWs = useMemo(
+    () => telemetryToMessages(events, effectiveCutoff),
+    [events, effectiveCutoff],
+  );
   const messages = useMemo(
-    () => mergeMessages(history, liveFromWs),
-    [history, liveFromWs],
+    () => filterBySession(mergeMessages(history, liveFromWs), effectiveCutoff),
+    [history, liveFromWs, effectiveCutoff],
   );
 
   const refreshHistory = useCallback(() => {
     return api
       .chatHistory(200)
-      .then((res) => setHistory(res.messages || []))
+      .then((res) => {
+        const cutoff = Number(
+          res.session_started_at ?? res.session?.session_started_at ?? 0,
+        );
+        if (cutoff > 0) setSessionCutoff(cutoff);
+        const msgs = res.messages || [];
+        setHistory(cutoff > 0 ? filterBySession(msgs, cutoff) : msgs);
+      })
       .then(() => api.recent(120))
       .then((res) => {
-        const fromTel = telemetryToMessages(res.events || []);
-        setHistory((prev) => mergeMessages(prev, fromTel));
+        const cutoff = Math.max(
+          sessionCutoff,
+          sessionCutoffFromEvents(res.events || []),
+        );
+        if (cutoff > 0) setSessionCutoff(cutoff);
+        const fromTel = telemetryToMessages(res.events || [], cutoff);
+        setHistory((prev) =>
+          filterBySession(mergeMessages(prev, fromTel), cutoff),
+        );
         setApiOk(true);
         setError(null);
       })
@@ -129,7 +160,7 @@ export function HudChat({ events }: { events: TelemetryEvent[] }) {
             : "Chat API offline — start brain_server / tray_launcher",
         );
       });
-  }, []);
+  }, [sessionCutoff]);
 
   useEffect(() => {
     refreshHistory();

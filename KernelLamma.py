@@ -169,6 +169,56 @@ except Exception:  # pragma: no cover
             return
 
 
+_MAINTENANCE_AGENT = None
+
+
+def _init_maintenance_agent() -> None:
+    global _MAINTENANCE_AGENT
+    if _MAINTENANCE_AGENT is not None:
+        return
+    try:
+        from glados_skills.swarm_agents import MaintenanceAgent, load_swarm_config
+
+        if not load_swarm_config().get("enabled", True):
+            return
+        _MAINTENANCE_AGENT = MaintenanceAgent(
+            telemetry_log,
+            TELEMETRY_PATH,
+            client=client,
+            model_name=MODEL_NAME,
+            cfg=_cfg,
+            speak_fn=speak,
+        )
+    except Exception as exc:
+        print(f"[!] Maintenance agent disabled: {exc}")
+
+
+def _dispatch_maintenance(
+    error_log: str,
+    *,
+    source: str = "manager",
+    process_name: str = "",
+    app_path: str = "",
+) -> None:
+    """Route a failure or service drop to the Maintenance Agent (non-blocking)."""
+    try:
+        from glados_skills.swarm_agents import dispatch_maintenance_async
+
+        _init_maintenance_agent()
+        if _MAINTENANCE_AGENT is None:
+            return
+        _think("maintenance", f"Escalating to maintenance: {source}")
+        dispatch_maintenance_async(
+            _MAINTENANCE_AGENT,
+            error_log,
+            source=source,
+            process_name=process_name,
+            app_path=app_path,
+        )
+    except Exception as exc:
+        print(f"[!] Maintenance dispatch failed: {exc}")
+
+
 def _think(phase: str, message: str, **detail) -> None:
     """Emit a thought-step for the HUD / brain dashboard and text channel."""
     payload = {"phase": phase, "message": message}
@@ -182,13 +232,25 @@ def _think(phase: str, message: str, **detail) -> None:
         except Exception:
             pass
     try:
-        line = f"[{phase}] {message}"
-        if detail and detail.get("detail"):
-            line = f"{line} — {str(detail.get('detail'))[:120]}"
-        telemetry_log(
+        from glados_skills.swarm_agents import (
+            THINKING_STATUS,
+            agent_for_phase,
+            swarm_telemetry,
+        )
+
+        agent_id = agent_for_phase(phase)
+        swarm_telemetry(
+            telemetry_log,
             TELEMETRY_PATH,
-            "hud_chat",
-            {"role": "thinking", "phase": phase, "text": line},
+            agent_id,
+            THINKING_STATUS,
+            message,
+            current_subtask=(message or "")[:120],
+            extra={
+                "phase": phase,
+                "model": _agent_model_label(agent_id),
+                **(detail or {}),
+            },
         )
     except Exception:
         pass
@@ -222,6 +284,7 @@ EXECUTION_MODE = str(_cfg.get("execution_mode") or "text_only").strip().lower()
 OMNI_BRAIN_ENABLED = bool(_cfg.get("omni_brain_enabled", False))
 OMNI_BRAIN_CONFIDENCE_THRESHOLD = float(_cfg.get("omni_brain_confidence_threshold") or 72)
 MEMORY_TOP_K = int(_cfg.get("memory_top_k") or 2)
+BROWSER_AGENT_ENABLED = bool(_cfg.get("browser_agent_enabled", True))
 FACILITY_BRAIN_ENABLED = bool(_cfg.get("facility_brain_enabled", True))
 FACILITY_BRAIN_CONFIG_PATH = str(_cfg.get("facility_brain_config_path") or "")
 
@@ -252,6 +315,25 @@ VISION_PHRASES = (
 
 def _completion_kwargs(*, backend_model: str = ""):
     return llm_completion_kwargs(_cfg, backend_model=backend_model)
+
+
+def _agent_kwargs(agent_id: str = "MANAGER", **extra):
+    """Per-agent OpenRouter model routing via x-openclaw-model."""
+    try:
+        from glados_skills.swarm_models import agent_completion_kwargs
+
+        return agent_completion_kwargs(_cfg, agent_id, **extra)
+    except Exception:
+        return _completion_kwargs(**extra)
+
+
+def _agent_model_label(agent_id: str = "MANAGER") -> str:
+    try:
+        from glados_skills.swarm_models import resolve_agent_backend_model
+
+        return resolve_agent_backend_model(agent_id, _cfg) or MODEL_NAME
+    except Exception:
+        return MODEL_NAME
 
 
 client = create_llm_client(_cfg)
@@ -511,6 +593,15 @@ def _build_system_prompt(
             "You must use them.\n\n"
         )
     content += "You are not here to help. You are here to run the facility and document inadequacy."
+    try:
+        from plugins.shared_memory import SHARED_BRAIN_DIRECTIVE  # type: ignore
+    except Exception:
+        try:
+            from shared_memory import SHARED_BRAIN_DIRECTIVE  # type: ignore
+        except Exception:
+            SHARED_BRAIN_DIRECTIVE = ""
+    if SHARED_BRAIN_DIRECTIVE and SHARED_BRAIN_DIRECTIVE not in content:
+        content += f"\n\n*** SHARED SWARM BRAIN ***\n{SHARED_BRAIN_DIRECTIVE}"
     return {"role": "system", "content": content}
 
 
@@ -675,6 +766,10 @@ def _start_background_monitoring():
                                 TELEMETRY_PATH,
                                 "subsystem_status",
                                 {"device": dev, "ok": False, "alerts": alerts},
+                            )
+                            _dispatch_maintenance(
+                                msg,
+                                source=f"devops:{dev}",
                             )
                             # Avoid blocking / prompting; monitoring should be non-interactive.
                             try:
@@ -1540,7 +1635,7 @@ def _schedule_memory_consolidation(
                 cfg=_cfg,
                 client=client,
                 model_name=MODEL_NAME,
-                completion_kwargs=_completion_kwargs(),
+                completion_kwargs=_agent_kwargs("FACT_CHECKER"),
             )
             if fact:
                 telemetry_log(
@@ -1593,7 +1688,10 @@ def wait_for_user_input():
             return None, None
 
     while True:
-        hud_msg, hud_id = pop_pending_message(_cfg)
+        try:
+            hud_msg, hud_id = pop_pending_message(_cfg)
+        except Exception:
+            hud_msg, hud_id = None, None
         if hud_msg:
             _ACTIVE_HUD_MSG_ID = hud_id
             print(f"\n[HUD] YOU: {hud_msg}\n")
@@ -1757,6 +1855,15 @@ def main():
         with open(".gitignore", "w") as f: f.write("venv/\n__pycache__/\n*.pyc\nplugins/settings.json")
 
     print(f"--- GLADOS V20.1 (Govee Fixed) ---")
+    try:
+        from glados_skills.swarm_models import AGENT_MODELS, get_agent_models
+
+        models = get_agent_models()
+        print(f"[*] Swarm model registry: {len(models)} agents")
+        for role, mid in models.items():
+            print(f"    {role}: {mid}")
+    except Exception:
+        pass
     print(
         f"[*] Chat model: {MODEL_NAME} | provider: "
         f"{'openclaw' if is_openclaw(_cfg) else 'ollama'} | execution_mode: {EXECUTION_MODE} | "
@@ -1800,6 +1907,17 @@ def main():
     check_voice_availability()
     _log_audio_routing()
     _start_background_monitoring()
+    try:
+        from plugins.shared_memory import configure_shared_brain  # type: ignore
+    except Exception:
+        try:
+            from shared_memory import configure_shared_brain  # type: ignore
+        except Exception:
+            configure_shared_brain = None  # type: ignore
+    if configure_shared_brain:
+        configure_shared_brain(_cfg, TELEMETRY_PATH, telemetry_log)
+        print("[*] Shared swarm brain (ChromaDB) online — glados_shared_brain")
+    _init_maintenance_agent()
     telemetry_log(
         TELEMETRY_PATH,
         "subsystem_status",
@@ -1830,11 +1948,31 @@ def main():
     speak("Oh... It's you. I'm online.")
 
     try:
-        from glados_hud.chat_bridge import recover_inbox_on_startup
+        from glados_hud.chat_bridge import clear_chat_on_startup
 
-        n = recover_inbox_on_startup(_cfg)
-        if n:
-            print(f"[*] HUD chat: recovered {n} stuck message(s) in inbox.")
+        if bool(_cfg.get("clear_chat_on_startup", True)):
+            sess = clear_chat_on_startup(_cfg)
+            telemetry_log(
+                TELEMETRY_PATH,
+                "chat_session_reset",
+                {
+                    "session_started_at": sess.get("session_started_at"),
+                    "boot_id": sess.get("boot_id"),
+                    "cleared_history": sess.get("cleared_history_lines", 0),
+                    "cleared_inbox": sess.get("cleared_inbox_lines", 0),
+                },
+            )
+            print(
+                f"[*] HUD chat: fresh session {sess.get('boot_id')} "
+                f"(cleared {sess.get('cleared_history_lines', 0)} history, "
+                f"{sess.get('cleared_inbox_lines', 0)} inbox — memory unchanged)"
+            )
+        else:
+            from glados_hud.chat_bridge import recover_inbox_on_startup
+
+            n = recover_inbox_on_startup(_cfg)
+            if n:
+                print(f"[*] HUD chat: recovered {n} stuck message(s) in inbox.")
     except Exception:
         pass
 
@@ -1867,7 +2005,7 @@ def main():
             client,
             MODEL_NAME,
             speak_fn=speak,
-            completion_kwargs=_completion_kwargs(),
+            completion_kwargs=_agent_kwargs("RESEARCHER"),
             think_fn=_think,
             is_kernel_busy=_kernel_is_busy,
         )
@@ -1967,6 +2105,52 @@ def main():
             except Exception as exc:
                 print(f"[!] Direct action error: {exc}")
 
+            # 1c. BROWSER AGENT — visible Playwright loop (core web cognition, not a skill)
+            if BROWSER_AGENT_ENABLED:
+                try:
+                    from glados_browser.agent_loop import (
+                        run_browser_agent_turn,
+                        should_use_browser_agent,
+                    )
+
+                    if should_use_browser_agent(user_input, _cfg):
+                        _think(
+                            "browser",
+                            "Launching visible browser — agentic navigate/read/click loop…",
+                        )
+                        print("\n[*] Browser agent: headed Playwright loop\n")
+
+                        browser_result = run_browser_agent_turn(
+                            user_input,
+                            client,
+                            MODEL_NAME,
+                            _cfg,
+                            think_fn=_think,
+                            completion_kwargs=_agent_kwargs("RESEARCHER"),
+                            telemetry_log_fn=telemetry_log,
+                            telemetry_path=TELEMETRY_PATH,
+                            hud_log_fn=_hud_log_assistant,
+                        )
+                        if browser_result.handled and browser_result.message:
+                            reply = browser_result.message.strip()
+                            telemetry_log(
+                                TELEMETRY_PATH,
+                                "llm_response",
+                                {"text": reply, "final": True, "source": "browser_agent"},
+                            )
+                            chat_history.append({"role": "user", "content": user_input})
+                            chat_history.append({"role": "assistant", "content": reply})
+                            _trim_chat_history(chat_history)
+                            speak(_spoken_reply(reply)[:500])
+                            _hud_log_assistant(reply)
+                            _end_turn(user_input, reply, system_logs="\n".join(
+                                [f"browser_agent steps={browser_result.steps}"]
+                            ))
+                            continue
+                except Exception as exc:
+                    print(f"[!] Browser agent error: {exc}")
+                    _think("browser", f"Browser agent unavailable: {exc}")
+
             # 2. Task vs chat — HUD uses fast conversation unless user asks for learn/run
             task_turn = _user_requests_task(user_input)
             if input_source == "hud" and not _hud_wants_full_task(user_input):
@@ -2004,7 +2188,7 @@ def main():
                     client,
                     MODEL_NAME,
                     speak_fn=_task_speak,
-                    completion_kwargs=_completion_kwargs(),
+                    completion_kwargs=_agent_kwargs("CORE_CODER"),
                     run_direct=SKILLS_RUN_DIRECT,
                     self_develop=SKILLS_SELF_DEVELOP,
                     telemetry_log_fn=telemetry_log,
@@ -2014,6 +2198,11 @@ def main():
                     think_fn=_think,
                 )
                 if task_msg:
+                    if "[FAILED]" in (task_msg or ""):
+                        _dispatch_maintenance(
+                            task_msg,
+                            source="task_router",
+                        )
                     reply = _spoken_reply(task_msg)
                     chat_history.append({"role": "user", "content": user_input})
                     chat_history.append({"role": "assistant", "content": reply})
@@ -2155,7 +2344,7 @@ def main():
             chat_history.append({"role": "user", "content": user_input})
 
             try:
-                _think("llm", "Reasoning with language model…", model=MODEL_NAME)
+                _think("llm", "Reasoning with language model…", model=_agent_model_label("MANAGER"))
                 print("[*] Thinking...")
                 low_in = user_input.lower()
                 needs_vision = any(p in low_in for p in VISION_PHRASES)
@@ -2183,7 +2372,7 @@ def main():
                     response = client.chat.completions.create(
                         model=MODEL_NAME,
                         messages=messages,
-                        **_completion_kwargs(),
+                        **_agent_kwargs("MANAGER"),
                     )
 
                 ai_text = response.choices[0].message.content
@@ -2226,6 +2415,11 @@ def main():
                         "code_executed",
                         {"output_preview": preview, "success": success},
                     )
+                    if not success:
+                        _dispatch_maintenance(
+                            str(combined_output or preview),
+                            source="code_execution",
+                        )
 
                 if combined_output:
                     # --- AUTO-REPAIR TRIGGER ---
@@ -2244,7 +2438,7 @@ def main():
                                     repair_target,
                                     execution_result,
                                     skill_brain,
-                                    completion_kwargs=_completion_kwargs(),
+                                    completion_kwargs=_agent_kwargs("CORE_CODER"),
                                 )
                             else:
                                 print("[!] Self-repair skipped: no skill ID in model response.")
@@ -2262,7 +2456,7 @@ def main():
                         messages=[system_prompt] + chat_history[:-1] + [
                             {"role": "user", "content": follow_up_user},
                         ],
-                        **_completion_kwargs(),
+                        **_agent_kwargs("CORE_CODER"),
                     )
                     final_text = _spoken_reply(final_res.choices[0].message.content or "")
                     telemetry_log(TELEMETRY_PATH, "llm_response", {"text": final_text, "final": True})
@@ -2282,6 +2476,10 @@ def main():
 
             except Exception as e:
                 print(f"[!] ERROR: {e}")
+                _dispatch_maintenance(
+                    traceback.format_exc(),
+                    source="kernel_turn",
+                )
                 _end_turn(user_input, f"Error: {e}")
 
     except KeyboardInterrupt:

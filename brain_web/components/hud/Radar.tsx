@@ -57,7 +57,7 @@ export function Radar() {
         <circle cx="45" cy="72" r="1.5" fill="#3dd6ff" opacity="0.5" />
       </svg>
       <p className="mt-1 text-center font-mono text-[9px] uppercase tracking-widest text-hud-cyan/50">
-        Local scan
+        Local ping
       </p>
     </div>
   );

@@ -103,11 +103,21 @@ export const api = {
       edges: import("./types").GraphEdge[];
     }>("/api/brain/graph"),
   chatHistory: (limit = 150) =>
-    fetchJson<{ messages: ChatMessage[]; count: number }>(
-      `/api/chat/history?limit=${limit}`,
-    ),
+    fetchJson<{
+      messages: ChatMessage[];
+      count: number;
+      session_started_at?: number | null;
+      session?: { session_started_at?: number; boot_id?: string };
+    }>(`/api/chat/history?limit=${limit}`),
   chatSend: (text: string) =>
     fetchJson<{ ok: boolean; id?: string; error?: string }>("/api/chat/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    }),
+  /** Manual text override — bypasses STT, routes to Swarm Manager via inbox + telemetry. */
+  sendUserPrompt: (text: string) =>
+    fetchJson<{ ok: boolean; id?: string; error?: string }>("/api/chat/prompt", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),

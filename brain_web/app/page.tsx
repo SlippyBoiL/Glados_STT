@@ -1,56 +1,81 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { BrainCanvas } from "@/components/BrainCanvas";
-import { LiveFeed } from "@/components/LiveFeed";
-import { ThoughtPipeline } from "@/components/ThoughtPipeline";
+import Link from "next/link";
+import { InternalMonologue } from "@/components/swarm/InternalMonologue";
+import { MaintenanceLog } from "@/components/swarm/MaintenanceLog";
+import { SwarmNetworkCanvas } from "@/components/swarm/SwarmNetworkCanvas";
+import { SwarmRosterPanel } from "@/components/swarm/SwarmRosterPanel";
+import { TelemetrySidebar } from "@/components/swarm/TelemetrySidebar";
 import { api } from "@/lib/api";
+import { buildSwarmState } from "@/lib/swarmState";
 import { useLiveTelemetry } from "@/lib/ws";
-import type { BrainState } from "@/lib/types";
+import type { SwarmDashboardState } from "@/lib/types";
 
-export default function LiveMindPage() {
-  const { events, connected } = useLiveTelemetry();
-  const [state, setState] = useState<BrainState | null>(null);
-  const lastEvent = events[events.length - 1];
+export default function SwarmCommandDashboard() {
+  const { events, connected } = useLiveTelemetry(500);
+  const [swarm, setSwarm] = useState<SwarmDashboardState>(() =>
+    buildSwarmState([]),
+  );
 
   useEffect(() => {
-    api.state().then(setState).catch(() => {});
-    const t = setInterval(() => {
-      api.state().then(setState).catch(() => {});
-    }, 5000);
+    setSwarm(buildSwarmState(events));
+  }, [events]);
+
+  useEffect(() => {
+    const poll = () => {
+      api.metrics().then((m) => {
+        setSwarm((prev) => ({
+          ...prev,
+          metrics: {
+            cpu: m.cpu_percent ?? prev.metrics.cpu,
+            ram: m.ram_percent ?? prev.metrics.ram,
+            disk: m.disk_percent ?? prev.metrics.disk,
+          },
+        }));
+      }).catch(() => {});
+    };
+    poll();
+    const t = setInterval(poll, 3000);
     return () => clearInterval(t);
   }, []);
 
   return (
-    <div className="space-y-4">
+    <div className="flex min-h-[calc(100vh-4rem)] flex-col gap-3">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h2 className="text-xl font-semibold">Live Mind</h2>
+          <h2 className="text-xl font-semibold">Swarm Command Dashboard</h2>
           <p className="text-sm text-aperture-muted">
-            Real-time thought pipeline from Glados telemetry
+            Seven-agent telemetry — roster, network, vitals, and maintenance
           </p>
         </div>
-        {state?.event_count != null ? (
-          <span className="font-mono text-xs text-aperture-muted">
-            {state.event_count} events logged
-          </span>
-        ) : null}
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-3">
-        <BrainCanvas activeEventType={lastEvent?.event_type} />
-        <div className="lg:col-span-2">
-          <ThoughtPipeline events={events} />
+        <div className="flex gap-2">
+          <Link
+            href="/hud/"
+            className="rounded border border-aperture-orange/50 px-3 py-1.5 text-xs text-aperture-orange hover:bg-aperture-orange/10"
+          >
+            Command Center →
+          </Link>
         </div>
       </div>
 
-      <LiveFeed events={events} connected={connected} />
+      <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-12">
+        <aside className="lg:col-span-3">
+          <SwarmRosterPanel swarm={swarm} />
+        </aside>
 
-      {state?.last_heard?.text ? (
-        <p className="text-center text-xs text-aperture-muted">
-          Last heard: &ldquo;{state.last_heard.text}&rdquo;
-        </p>
-      ) : null}
+        <section className="flex min-h-0 flex-col gap-3 lg:col-span-6">
+          <div className="min-h-[280px] flex-1">
+            <SwarmNetworkCanvas swarm={swarm} />
+          </div>
+          <InternalMonologue lines={swarm.monologue} />
+        </section>
+
+        <aside className="flex min-h-0 flex-col gap-3 lg:col-span-3">
+          <TelemetrySidebar swarm={swarm} connected={connected} />
+          <MaintenanceLog lines={swarm.maintenanceLog} />
+        </aside>
+      </div>
     </div>
   );
 }

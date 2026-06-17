@@ -49,5 +49,18 @@ def repair_skill_in_brain(
         print(f"[+] Repaired skill '{skill_id}' in brain.")
         skills._log_learning(f"repaired '{skill_id}'", error_log[:200])
         skills.save()
+        try:
+            from plugins.shared_memory import remember_insight  # type: ignore
+        except Exception:
+            try:
+                from shared_memory import remember_insight  # type: ignore
+            except Exception:
+                remember_insight = None  # type: ignore
+        if remember_insight:
+            remember_insight(
+                f"Repaired protocol '{skill_id}': {error_log[:400]}",
+                tags=["skill_repair", skill_id, "error_fix"],
+                sender_agent="CORE_CODER",
+            )
         return True
     return False

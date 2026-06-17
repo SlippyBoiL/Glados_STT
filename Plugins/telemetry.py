@@ -45,3 +45,66 @@ def thinking_log(
         payload.update(detail)
     telemetry_log(telemetry_path, "thinking", payload)
 
+
+def swarm_telemetry_log(
+    telemetry_path: str,
+    agent_id: str,
+    status: str,
+    message: str,
+    **extra: Any,
+) -> None:
+    """Multi-agent swarm status for the command dashboard."""
+    from datetime import datetime
+
+    payload: Dict[str, Any] = {
+        "agent_id": agent_id,
+        "status": status,
+        "message": message,
+        "timestamp": datetime.now().strftime("%H:%M:%S"),
+    }
+    if extra:
+        payload.update(extra)
+    telemetry_log(telemetry_path, "swarm_telemetry", payload)
+
+
+def system_metrics_log(telemetry_path: str, metrics: Dict[str, Any]) -> None:
+    """Push psutil host metrics over the telemetry WebSocket stream."""
+    from datetime import datetime
+
+    payload = {
+        "metrics": {
+            "cpu": metrics.get("cpu_percent", 0),
+            "ram": metrics.get("ram_percent", 0),
+            "disk": metrics.get("disk_percent", 0),
+        },
+        "timestamp": datetime.now().strftime("%H:%M:%S"),
+        "detail": metrics,
+    }
+    telemetry_log(telemetry_path, "system_metrics", payload)
+
+
+def brain_update_log(
+    telemetry_path: str,
+    sender_agent: str,
+    insight_preview: str,
+    *,
+    tags: Optional[list] = None,
+    insight_id: str = "",
+    ok: bool = True,
+) -> None:
+    """HUD flash when the central shared brain writes a new insight."""
+    from datetime import datetime
+
+    payload: Dict[str, Any] = {
+        "action": "remember_insight",
+        "ok": ok,
+        "sender_agent": sender_agent,
+        "insight_preview": (insight_preview or "")[:300],
+        "timestamp": datetime.now().strftime("%H:%M:%S"),
+    }
+    if tags:
+        payload["tags"] = list(tags)
+    if insight_id:
+        payload["insight_id"] = insight_id
+    telemetry_log(telemetry_path, "brain_update", payload)
+

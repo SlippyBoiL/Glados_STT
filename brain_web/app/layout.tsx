@@ -3,8 +3,8 @@ import type { Metadata } from "next";
 import { AppShell } from "@/components/AppShell";
 
 export const metadata: Metadata = {
-  title: "GLaDOS Brain Dashboard",
-  description: "Live mind, memory, and protocol observatory",
+  title: "GLaDOS Swarm Command Dashboard",
+  description: "Seven-agent swarm telemetry, shared brain, and facility operations",
 };
 
 export default function RootLayout({
