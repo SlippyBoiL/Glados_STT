@@ -3,11 +3,10 @@
 @tailwind utilities;
 
 body {
-  background-image: radial-gradient(
-    ellipse at top,
-    rgba(74, 127, 165, 0.08) 0%,
-    transparent 55%
-  );
+  background-color: #00050b;
+  background-image:
+    radial-gradient(ellipse at top, rgba(0, 240, 255, 0.07) 0%, transparent 50%),
+    radial-gradient(ellipse at bottom right, rgba(30, 80, 180, 0.1) 0%, transparent 45%);
 }
 
 .panel {
@@ -37,13 +36,39 @@ body {
 
 .hud-grid {
   background-image:
-    linear-gradient(rgba(61, 214, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(61, 214, 255, 0.04) 1px, transparent 1px);
+    linear-gradient(rgba(0, 240, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 240, 255, 0.04) 1px, transparent 1px);
   background-size: 40px 40px;
   mask-image: radial-gradient(ellipse at center, black 20%, transparent 75%);
 }
 
 .hud-panel {
   @apply rounded border border-hud-cyan/15 bg-hud-panel backdrop-blur-sm;
-  box-shadow: 0 0 20px rgba(26, 140, 255, 0.08), inset 0 0 30px rgba(61, 214, 255, 0.03);
+  box-shadow: 0 0 20px rgba(0, 240, 255, 0.08), inset 0 0 30px rgba(0, 240, 255, 0.03);
+}
+
+/* Neural Observation Room — JARVIS holographic glass */
+.neural-root {
+  font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", "Segoe UI", sans-serif;
+}
+
+.neural-grid {
+  background-image:
+    linear-gradient(rgba(0, 240, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 240, 255, 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse at center, black 25%, transparent 78%);
+}
+
+.jarvis-glass {
+  @apply rounded-sm border border-[#00F0FF]/20 backdrop-blur-md;
+  background: linear-gradient(
+    160deg,
+    rgba(0, 18, 32, 0.78) 0%,
+    rgba(0, 8, 18, 0.65) 100%
+  );
+  box-shadow:
+    0 0 40px rgba(0, 240, 255, 0.08),
+    inset 0 0 40px rgba(0, 240, 255, 0.03),
+    inset 0 1px 0 rgba(0, 240, 255, 0.15);
 }

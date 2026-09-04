@@ -55,9 +55,23 @@ export type ServiceRegistryEntry = {
   lastTs: number;
 };
 
+export type ExecutionLogEntry = {
+  id: string;
+  kind: "tool_intent" | "tool_result";
+  text: string;
+};
+
+export type TerminalLine = {
+  id: string;
+  kind: "telemetry" | "tool_intent" | "tool_result";
+  text: string;
+};
+
 export type SwarmDashboardState = {
   agents: Record<SwarmAgentId, SwarmAgentState>;
   monologue: string[];
+  executionLog: ExecutionLogEntry[];
+  terminalLog: TerminalLine[];
   maintenanceLog: string[];
   metrics: { cpu: number; ram: number; disk: number };
   services: ServiceRegistryEntry[];

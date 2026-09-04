@@ -1,14 +1,9 @@
 {
   "facts": [
     {
-      "id": "pihole",
-      "keywords": ["pihole", "pi-hole", "dns", "blocklist", "pi"],
-      "text": "Pi-hole DNS server is used as the local ad/block resolver; outages or unusual block spikes should be treated as important early warnings."
-    },
-    {
-      "id": "twingate",
-      "keywords": ["twingate", "vpn", "remote", "access"],
-      "text": "Twingate is the remote-access mechanism; if remote services fail, check tunnel status before assuming infrastructure is down."
+      "id": "proxmox",
+      "keywords": ["proxmox", "pve", "hypervisor", "vm", "qemu", "lxc", "192.168.0.129"],
+      "text": "Primary hypervisor is Proxmox VE at 192.168.0.129 (SSH on port 22, web UI http://192.168.0.129:8080). Prefer checking Proxmox before assuming VMs or lab services are down."
     },
     {
       "id": "cad_scale",
@@ -17,4 +12,3 @@
     }
   ]
 }
-

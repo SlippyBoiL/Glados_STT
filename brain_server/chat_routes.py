@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from brain_server.data import telemetry_path
@@ -43,7 +43,10 @@ def _dispatch_user_prompt(text: str, *, source: str) -> Dict[str, Any]:
     text = (text or "").strip()
     msg_id = enqueue_user_message(text, cfg)
     if not msg_id:
-        return {"ok": False, "error": "empty message or inbox busy"}
+        raise HTTPException(
+            status_code=503,
+            detail="Kernel inbox busy — GLaDOS may still be starting. Retry in a few seconds.",
+        )
     _telemetry_log(
         cfg,
         "user_text_prompt",
@@ -59,9 +62,9 @@ def _dispatch_user_prompt(text: str, *, source: str) -> Dict[str, Any]:
         "swarm_telemetry",
         {
             "agent_id": "MANAGER",
-            "status": "thinking",
+            "status": "idle",
             "message": text,
-            "current_subtask": f"Manual override: {text[:120]}",
+            "current_subtask": "Standing by",
             "source": source,
         },
     )

@@ -153,6 +153,12 @@ def _linux_health(target: str, profile: dict) -> dict:
                 # only alert if docker check also indicates no running container
                 if "twingate_docker" in out and "no running" in (out["twingate_docker"] or "").lower():
                     res["alerts"].append("Twingate connector not detected (systemd/docker).")
+            if "pve_version" in out and "missing" in (out["pve_version"] or "").lower():
+                res["alerts"].append("Proxmox pveversion unavailable.")
+            if "pve_web" in out:
+                code = (out["pve_web"] or "").strip()
+                if code and code not in ("200", "301", "302", "401", "403"):
+                    res["alerts"].append(f"Proxmox web UI on :8080 returned {code}.")
 
     return res
 

@@ -13,9 +13,11 @@ import io
 import winreg
 from difflib import SequenceMatcher
 from openai import OpenAI
-import tensorflow as tf
 import numpy as np
-import omni_brain
+# NOTE: Kernel.py is the LEGACY entrypoint. The active kernel is KernelLamma.py.
+# The TensorFlow "Omni-Brain" intent classifier has been retired in favor of the
+# ChromaDB shared brain; this shim keeps the legacy file importable without TF.
+omni_brain = None  # type: ignore
 import threading
 from PIL import Image
 import base64
@@ -763,9 +765,8 @@ def main():
     chat_history = []
     MAX_HISTORY = 10 
 
-    # --- INITIALIZE OMNI-BRAIN ---
-    print("[*] Loading Omni-Brain model into memory...")
-    model = omni_brain.get_model()
+    # Omni-Brain retired — legacy kernel runs without the TensorFlow intent model.
+    model = None
 
     try:
         while True:
@@ -842,21 +843,15 @@ def main():
             except Exception:
                 pass
 
-            # --- THE OMNI-BRAIN INTENT CLASSIFIER ---
-            print("[*] Omni-Brain analyzing intent...")
-            prediction = model.predict(tf.constant([user_input], dtype=tf.string), verbose=0)[0]
-            intent_id = int(np.argmax(prediction))
-            confidence = prediction[intent_id] * 100
-
-            categories = ["LIGHTS", "OPEN APP", "CLOSE APP", "CHAT / SKILLS"]
-            print(f"[*] Brain routed to: {categories[intent_id]} ({confidence:.2f}% confident)")
-
-            if confidence > 45.0:
+            # Omni-Brain intent classifier retired — legacy kernel routes everything
+            # straight to chat/skills (the active kernel is KernelLamma.py).
+            if model is not None:
                 routed = False
-                if intent_id == 0: routed = handle_light_command(user_input)
-                elif intent_id == 1: routed = handle_app_open(user_input)
-                elif intent_id == 2: routed = handle_app_close(user_input)
-                if routed: continue
+                low = user_input.lower()
+                if any(w in low for w in ("light", "lamp", "led")):
+                    routed = handle_light_command(user_input)
+                if routed:
+                    continue
 
             # Prepare messages for Llama
             messages = [system_prompt] + chat_history

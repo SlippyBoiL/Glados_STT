@@ -4,8 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const links = [
-  { href: "/hud/", label: "Command Center" },
-  { href: "/", label: "Swarm Dashboard" },
+  { href: "/", label: "Command Center" },
+  { href: "/observatory/", label: "Swarm Observatory" },
   { href: "/memory/", label: "Memory" },
   { href: "/skills/", label: "Skills" },
   { href: "/intents/", label: "Intents" },

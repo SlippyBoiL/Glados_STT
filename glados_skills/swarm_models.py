@@ -1,15 +1,20 @@
 """
 Per-agent OpenRouter model routing for the 7-agent GLaDOS swarm.
 
-Models are sent to OpenClaw via the ``x-openclaw-model`` header (see glados_llm.py).
-Registry keys use short role names; full swarm agent IDs are aliased automatically.
+When ``llm_provider`` is ``openrouter``, each agent uses its registry model directly.
+With OpenClaw, models are sent via the ``x-openclaw-model`` header (see glados_llm.py).
 """
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
-from glados_llm import completion_kwargs, resolve_chat_model
+from glados_llm import (
+    call_openrouter_with_retry,
+    completion_kwargs,
+    is_openrouter,
+    resolve_chat_model,
+)
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_SWARM_CONFIG = os.path.join(REPO_ROOT, "configs", "swarm_agents.yaml")
@@ -95,16 +100,21 @@ def openrouter_backend(model: str) -> str:
 
 
 def resolve_agent_backend_model(agent_id: str, cfg: Optional[Dict[str, Any]] = None) -> str:
-    """OpenRouter model string for x-openclaw-model (empty → gateway default)."""
-    _ = cfg
+    """Per-agent model id (OpenRouter direct) or x-openclaw-model backend override."""
     registry = get_agent_models()
     key = normalize_registry_key(agent_id)
     model = registry.get(key, registry.get("MANAGER", ""))
-    return openrouter_backend(model) if model else ""
+    if not model:
+        return ""
+    if cfg and is_openrouter(cfg):
+        return model
+    return openrouter_backend(model)
 
 
 def gateway_model_for_agent(agent_id: str, cfg: Dict[str, Any]) -> str:
-    """Gateway ``model`` field — always the OpenClaw agent target."""
+    """``model`` field for chat.completions.create."""
+    if is_openrouter(cfg):
+        return resolve_agent_backend_model(agent_id, cfg) or resolve_chat_model(cfg)
     return resolve_chat_model(cfg)
 
 
@@ -115,7 +125,11 @@ def agent_completion_kwargs(
     backend_model: str = "",
     **extra: Any,
 ) -> Dict[str, Any]:
-    """Completion kwargs with per-agent OpenRouter backend routing."""
+    """Completion kwargs with per-agent model routing."""
+    if is_openrouter(cfg):
+        kw = completion_kwargs(cfg)
+        kw.update(extra)
+        return kw
     backend = backend_model or resolve_agent_backend_model(agent_id, cfg)
     kw = completion_kwargs(cfg, backend_model=backend)
     kw.update(extra)
@@ -127,12 +141,16 @@ def agent_chat_create(
     cfg: Dict[str, Any],
     agent_id: str,
     messages: list,
+    *,
+    on_rate_limit_retry: Optional[Callable[[int], None]] = None,
+    on_local_fallback: Optional[Callable[[], None]] = None,
     **kwargs: Any,
 ):
     """
     Route a chat completion to the correct free-tier model for ``agent_id``.
 
     Extra kwargs (temperature, max_tokens, …) override registry defaults.
+    Falls back to a local Ollama instance if OpenRouter stays rate-limited.
     """
     pop_keys = ("backend_model", "agent_id")
     backend_override = kwargs.pop("backend_model", "")
@@ -145,4 +163,12 @@ def agent_chat_create(
         kwargs.pop(key, None)
     merged = {**kw, **kwargs}
     model = merged.pop("model", None) or gateway_model_for_agent(agent_id, cfg)
-    return client.chat.completions.create(model=model, messages=messages, **merged)
+    return call_openrouter_with_retry(
+        client,
+        model=model,
+        messages=messages,
+        cfg=cfg,
+        on_rate_limit_retry=on_rate_limit_retry,
+        on_local_fallback=on_local_fallback,
+        **merged,
+    )

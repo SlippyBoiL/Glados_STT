@@ -107,14 +107,22 @@ def resolve_target(target: str | None):
     }
 
 
-def run_ssh(command: str, target: str | None = None) -> str:
+def run_ssh(
+    command: str,
+    target: str | None = None,
+    *,
+    interactive: bool = False,
+) -> str:
     """
     Env vars:
       SSH_HOST (required)
       SSH_USER (required)
       SSH_PORT (optional, default 22)
       SSH_KEY_PATH (optional)
-      SSH_PASSWORD (optional; not recommended)
+      SSH_PASSWORD / per-device password_env (optional)
+
+    Never prompts for a password unless interactive=True (CLI only).
+    Background monitors must never block the console with getpass.
     """
     resolved = resolve_target(target)
     host = (resolved.get("host") or "").strip()
@@ -158,15 +166,15 @@ def run_ssh(command: str, target: str | None = None) -> str:
         elif password:
             kwargs["password"] = password
             kwargs["look_for_keys"] = False
+        elif interactive and sys.stdin and sys.stdin.isatty():
+            kwargs["password"] = getpass.getpass(f"SSH password for {user}@{host}: ")
+            kwargs["look_for_keys"] = False
         else:
-            # Prompt interactively only (monitoring runs in background and must not block).
-            if sys.stdin and sys.stdin.isatty():
-                kwargs["password"] = getpass.getpass(f"SSH password for {user}@{host}: ")
-            else:
-                raise RuntimeError(
-                    "No SSH password available (set SSH_PASSWORD or per-device password_env). "
-                    "Non-interactive mode cannot prompt."
-                )
+            env_hint = password_env or "SSH_PASSWORD"
+            return (
+                f"SSH failed: no credentials for {user}@{host}:{port} "
+                f"(set {env_hint} or SSH key_path — non-interactive mode will not prompt)"
+            )
 
         client.connect(**kwargs)
         stdin, stdout, stderr = client.exec_command(command, timeout=30)
@@ -189,10 +197,7 @@ def run_ssh(command: str, target: str | None = None) -> str:
 
 if __name__ == "__main__":
     # CLI usage:
-    #   python plugins/skill_ssh.py <target> -- <command>
-    # Examples:
-    #   python plugins/skill_ssh.py pi -- "uname -a"
-    #   python plugins/skill_ssh.py pi@192.168.1.50 -- "whoami"
+    #   python -m glados_skills.ssh_util proxmox -- "uname -a"
     if "--" in sys.argv:
         i = sys.argv.index("--")
         tgt = " ".join(sys.argv[1:i]).strip() or None
@@ -201,6 +206,6 @@ if __name__ == "__main__":
         tgt = None
         cmd = " ".join(sys.argv[1:]).strip()
     try:
-        print(run_ssh(cmd, target=tgt))
+        print(run_ssh(cmd, target=tgt, interactive=True))
     except Exception as e:
         print(json.dumps({"error": str(e)}, indent=2))

@@ -71,6 +71,16 @@ class FacilityBrain:
 
             n = sync_state_to_brain_memory(state)
             print(f"[*] Computer knowledge synced to Glados brain ({n} facts).")
+            try:
+                from facility_brain.knowledge_sync import state_to_facts
+                from memory.honcho_store import get_honcho_store
+
+                store = get_honcho_store(self._glados_cfg)
+                queued = store.ingest_computer_facts(state_to_facts(state))
+                if queued:
+                    print(f"[*] Honcho computer peer ingest queued ({queued} chunks).")
+            except Exception as he:
+                print(f"[!] Honcho computer ingest skipped: {he}")
         except Exception as e:
             print(f"[!] Brain sync failed: {e}")
 
@@ -172,9 +182,40 @@ def default_kernel_handlers(kernel_module) -> Dict[str, Callable]:
     """Build handler map from KernelLamma functions."""
 
     def open_app(app: str) -> bool:
+        # Prefer direct Windows skill (reliable Steam/Chrome paths).
+        try:
+            import importlib.util
+            from glados_paths import REPO_ROOT, resolve_plugins_dir
+
+            plugins = resolve_plugins_dir() or os.path.join(REPO_ROOT, "Plugins")
+            path = os.path.join(plugins, "skill_windows_apps.py")
+            if os.path.isfile(path):
+                spec = importlib.util.spec_from_file_location("fb_swa", path)
+                if spec and spec.loader:
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    ok, _detail = mod.open_app(app)
+                    return bool(ok)
+        except Exception:
+            pass
         return bool(kernel_module.handle_app_open(f"open {app}"))
 
     def close_app(app: str) -> bool:
+        try:
+            import importlib.util
+            from glados_paths import REPO_ROOT, resolve_plugins_dir
+
+            plugins = resolve_plugins_dir() or os.path.join(REPO_ROOT, "Plugins")
+            path = os.path.join(plugins, "skill_windows_apps.py")
+            if os.path.isfile(path):
+                spec = importlib.util.spec_from_file_location("fb_swa_close", path)
+                if spec and spec.loader:
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    ok, _detail = mod.close_app(app)
+                    return bool(ok)
+        except Exception:
+            pass
         return bool(kernel_module.handle_app_close(f"close {app}"))
 
     def server_check(device: str) -> str:

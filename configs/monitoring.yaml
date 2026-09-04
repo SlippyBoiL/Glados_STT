@@ -13,18 +13,14 @@ defaults:
   commands: []
 
 devices:
-  pihole:
-    services: ["pihole-FTL"]
+  proxmox:
+    services: ["pveproxy", "pvedaemon", "pvestatd"]
     commands:
-      - name: "pihole_status"
-        cmd: "command -v pihole >/dev/null 2>&1 && pihole status || echo 'pihole command missing'"
-
-  twingate:
-    # common cases: dockerized connector or a systemd service
-    docker_containers: ["twingate"]
-    commands:
-      - name: "twingate_systemd"
-        cmd: "systemctl list-units --type=service --state=running 2>/dev/null | grep -i twingate || echo 'no running twingate systemd service found'"
-      - name: "twingate_docker"
-        cmd: "command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -i twingate || echo 'no running twingate docker container found'"
-
+      - name: "pve_version"
+        cmd: "pveversion -v 2>/dev/null | head -n 5 || echo 'pveversion missing'"
+      - name: "pve_cluster"
+        cmd: "pvecm status 2>/dev/null | head -n 20 || echo 'not a cluster / pvecm unavailable'"
+      - name: "pve_vms"
+        cmd: "qm list 2>/dev/null || echo 'qm list unavailable'"
+      - name: "pve_web"
+        cmd: "curl -sk -o /dev/null -w '%{http_code}' --connect-timeout 3 http://127.0.0.1:8080/ || echo 'web check failed'"

@@ -5,9 +5,10 @@ import { NavBar } from "./NavBar";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const path = usePathname() || "";
-  const isHud = path.startsWith("/hud");
+  const isImmersive =
+    path === "/" || path.startsWith("/hud") || path.startsWith("/observatory");
 
-  if (isHud) {
+  if (isImmersive) {
     return <>{children}</>;
   }
 

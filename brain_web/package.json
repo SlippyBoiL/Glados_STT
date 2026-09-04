@@ -3,18 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3000",
+    "dev": "next dev -p 8888",
     "build": "next build",
-    "start": "next start -p 3000",
+    "start": "next start -p 8888",
     "lint": "next lint"
   },
   "dependencies": {
+    "@react-three/drei": "^10.7.8",
+    "@react-three/fiber": "^9.7.0",
     "framer-motion": "^12.9.2",
     "next": "^15.3.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-force-graph-2d": "^1.27.1",
-    "recharts": "^2.15.3"
+    "recharts": "^2.15.3",
+    "three": "^0.175.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",

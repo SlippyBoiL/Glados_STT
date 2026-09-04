@@ -69,8 +69,20 @@ export function buildThoughtTimeline(events: TelemetryEvent[]): ThoughtItem[] {
       continue;
     }
 
-    // Skip hud_chat thinking duplicates — kernel emits structured `thinking` events.
+    // Live CoT bubble — one updating thought, not spoken.
     if (ev.event_type === "hud_chat" && p.role === "thinking") {
+      const msg = String(p.text || "").trim();
+      if (!msg) continue;
+      const existing = items.findIndex((it) => it.phase === "cot");
+      const item: ThoughtItem = {
+        ts: ev.ts,
+        time,
+        phase: "cot",
+        message: msg,
+        source: "thinking",
+      };
+      if (existing >= 0) items[existing] = item;
+      else items.push(item);
       continue;
     }
 

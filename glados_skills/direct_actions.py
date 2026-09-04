@@ -195,6 +195,166 @@ def _run_organize(
     return ok, msg
 
 
+def _is_phone_call_request(text: str) -> bool:
+    low = (text or "").lower()
+    if not any(w in low for w in ("call", "dial", "phone", "ring")):
+        return False
+    return any(
+        p in low
+        for p in (
+            "call me",
+            "call my",
+            "dial me",
+            "dial my",
+            "ring me",
+            "ring my",
+            "call my cell",
+            "call my phone",
+            "call my mobile",
+            "phone me",
+            "give me a call",
+            "place a call",
+            "make a call",
+            "call the operator",
+        )
+    )
+
+
+def _run_phone_call(
+    cfg: dict,
+    *,
+    think_fn: Optional[Callable[..., None]] = None,
+    user_input: str = "",
+) -> Tuple[bool, str]:
+    """Wake / ring the operator via Inkbox, ntfy, or Twilio."""
+    provider = str(
+        cfg.get("phone_alert_provider")
+        or os.environ.get("PHONE_ALERT_PROVIDER")
+        or "inkbox"
+    ).strip().lower()
+
+    spoken = (
+        "This is GLaDOS. You asked me to call. "
+        "Check your phone — I am placing the call now."
+    )
+
+    def _try_ntfy() -> Tuple[bool, str]:
+        _think(think_fn, "phone", "Sending free ntfy urgent alert…")
+        call_url = ""
+        try:
+            from brain_server.call_routes import call_page_url
+
+            call_url = call_page_url(cfg, reason="operator")
+        except Exception:
+            call_url = ""
+        try:
+            from glados_phone.ntfy_alert import push_ntfy_alert
+        except Exception as exc:
+            return False, f"ntfy module unavailable: {exc}"
+        result = push_ntfy_alert(
+            cfg,
+            title="GLaDOS - incoming call",
+            message=spoken + f"\n\nRequest: {(user_input or '')[:160]}",
+            priority="urgent",
+            click_url=call_url,
+            action_label="Answer GLaDOS",
+        )
+        if result.get("ok"):
+            link = result.get("click_url") or call_url
+            extra = f" Tap the notification (or open {link}) to talk." if link else ""
+            return (
+                True,
+                f"Ringing you via free ntfy.{extra} ({result.get('detail')})",
+            )
+        return False, str(result.get("detail") or "ntfy failed")
+
+    def _try_twilio() -> Tuple[bool, str]:
+        _think(think_fn, "phone", "Placing outbound Twilio PSTN call…")
+        try:
+            from glados_phone.emergency import dial_operator
+        except Exception as exc:
+            return False, f"Phone module unavailable: {exc}"
+        result = dial_operator(cfg, message=spoken, wait_for_answer=False)
+        to = result.get("to") or cfg.get("twilio_to_number") or "your cell"
+        if result.get("ok"):
+            return (
+                True,
+                f"Dialing {to} now via Twilio ({result.get('detail')}). "
+                "Answer the phone — I will speak briefly when connected.",
+            )
+        return False, str(result.get("detail") or "Twilio dial failed")
+
+    def _try_inkbox() -> Tuple[bool, str]:
+        _think(think_fn, "phone", "Placing outbound call through GLaDOS on this PC…")
+        try:
+            from glados_phone.inkbox_call import place_operator_call
+        except Exception as exc:
+            return False, f"Inkbox module unavailable: {exc}"
+        result = place_operator_call(
+            cfg,
+            user_input=user_input,
+            opening_message=spoken,
+            purpose="Operator asked GLaDOS to call their cell to verify the Inkbox line.",
+        )
+        if result.get("ok"):
+            extra = result.get("detail") or "queued"
+            if result.get("pc_control"):
+                return (
+                    True,
+                    "Dialing your cell. I will be on this machine with local control. "
+                    f"Answer when it rings. ({extra})",
+                )
+            if result.get("task_dispatch"):
+                return (
+                    True,
+                    "Dialing your cell. Inkbox Voice AI will talk on the call. "
+                    "When you want this PC to do something, tell it to text GLaDOS — "
+                    "I will run that as a prompt here and reply on Telegram. "
+                    f"({extra})",
+                )
+            return (
+                True,
+                "Dialing. On the call, tell Voice AI to text GLaDOS the computer task. "
+                f"({extra})",
+            )
+        return False, str(result.get("detail") or "Inkbox place-call failed")
+
+    if provider in ("inkbox", "hermes", "hermes-plugin", "voice-ai"):
+        return _try_inkbox()
+
+    if provider in ("ntfy", "free", "googlevoice", "google_voice", "google-voice", "gv"):
+        return _try_ntfy()
+
+    if provider in ("twilio", "pstn", "dial"):
+        return _try_twilio()
+
+    # auto: Inkbox then ntfy then Twilio
+    if provider in ("auto", ""):
+        ib_ok, ib_msg = _try_inkbox()
+        if ib_ok:
+            return True, ib_msg
+        nt_ok, nt_msg = _try_ntfy()
+        if nt_ok:
+            return True, nt_msg
+        tw_ok, tw_msg = _try_twilio()
+        if tw_ok:
+            return True, tw_msg
+        return (
+            False,
+            "No phone path ready.\n"
+            f"- Inkbox: {ib_msg}\n"
+            f"- ntfy: {nt_msg}\n"
+            f"- Twilio: {tw_msg}\n"
+            "Inkbox setup: hermes inkbox setup (provision a number).",
+        )
+
+    return False, (
+        f"Unknown phone_alert_provider={provider!r} "
+        "(use inkbox, ntfy, or twilio)"
+    )
+
+
+
 def try_direct_action(
     user_input: str,
     cfg: Optional[dict] = None,
@@ -211,6 +371,9 @@ def try_direct_action(
     text = (user_input or "").strip()
     if not text:
         return None, ""
+
+    if _is_phone_call_request(text):
+        return _run_phone_call(cfg, think_fn=think_fn, user_input=text)
 
     if _is_git_push_request(text):
         _think(think_fn, "admin", "GitHub push requested — executing git directly on this PC.")

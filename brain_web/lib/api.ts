@@ -1,7 +1,7 @@
 const API_BASE =
   typeof window !== "undefined"
     ? process.env.NEXT_PUBLIC_API_URL || ""
-    : process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+    : process.env.NEXT_PUBLIC_API_URL || "http://localhost:8888";
 
 function authHeaders(): HeadersInit {
   const token =
@@ -36,6 +36,7 @@ export type ChatMessage = {
   ts?: number;
   source?: string;
   phase?: string;
+  streaming?: boolean;
 };
 
 export function wsUrl(): string {
@@ -80,6 +81,17 @@ export const api = {
       static: import("./types").StaticFact[];
       chroma: { id: string; text: string; metadata: Record<string, unknown> }[];
       chroma_enabled: boolean;
+      honcho_enabled?: boolean;
+      honcho?: {
+        enabled?: boolean;
+        ready?: boolean;
+        url?: string;
+        workspace?: string;
+        error?: string;
+        user_card?: string;
+        user_profile?: string;
+        computer_profile?: string;
+      };
       computer: import("./types").StaticFact[];
       computer_meta: {
         fact_count: number;

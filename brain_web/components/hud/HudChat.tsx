@@ -21,6 +21,8 @@ function filterBySession(messages: ChatMessage[], cutoff: number): ChatMessage[]
 
 function telemetryToMessages(events: TelemetryEvent[], sessionCutoff = 0): ChatMessage[] {
   const out: ChatMessage[] = [];
+  let liveStreamMsg: ChatMessage | null = null;
+  let liveThinkMsg: ChatMessage | null = null;
   for (const ev of events) {
     if (sessionCutoff > 0 && ev.ts < sessionCutoff - 0.001) continue;
     const p = ev.payload || {};
@@ -28,26 +30,50 @@ function telemetryToMessages(events: TelemetryEvent[], sessionCutoff = 0): ChatM
       const role = p.role as string | undefined;
       const text = String(p.text || "").trim();
       if (!text) continue;
-      if (role === "thinking") continue;
-      if (role !== "user" && role !== "assistant") continue;
-      out.push({
+      const msg: ChatMessage = {
         id: String(p.id || `${ev.ts}-${role}-${text.slice(0, 24)}`),
-        role: role as "user" | "assistant",
+        role: (role as ChatMessage["role"]) || "assistant",
         text,
         ts: ev.ts,
         source: p.source as string | undefined,
-      });
+        streaming: p.streaming === true,
+      };
+      if (role === "thinking") {
+        if (msg.id === "live-think" || p.streaming === true) {
+          if (p.streaming === true) {
+            liveThinkMsg = { ...msg, id: "live-think" };
+          } else {
+            out.push({
+              ...msg,
+              id: `think-done-${ev.ts}`,
+              streaming: false,
+            });
+            liveThinkMsg = null;
+          }
+          continue;
+        }
+        out.push(msg);
+        continue;
+      }
+      if (role !== "user" && role !== "assistant") continue;
+      if (msg.id === "live-stream" || p.streaming === true) {
+        liveStreamMsg = { ...msg, id: "live-stream" };
+        continue;
+      }
+      out.push(msg);
     } else if (ev.event_type === "thinking") {
       const text = String(p.message || "").trim();
-      if (text) {
-        out.push({
-          id: `think-${ev.ts}-${text.slice(0, 16)}`,
-          role: "thinking",
-          text: `[${p.phase || "think"}] ${text}`,
-          ts: ev.ts,
-          phase: String(p.phase || ""),
-        });
-      }
+      const phase = String(p.phase || "");
+      if (!text) continue;
+      if (phase === "done") continue;
+      if (phase === "llm" && /^thinking/i.test(text)) continue;
+      out.push({
+        id: `think-${ev.ts}-${text.slice(0, 16)}`,
+        role: "thinking",
+        text: `[${phase || "think"}] ${text}`,
+        ts: ev.ts,
+        phase,
+      });
     } else if (ev.event_type === "action_progress") {
       const text = String(p.message || "").trim();
       if (text) {
@@ -70,18 +96,30 @@ function telemetryToMessages(events: TelemetryEvent[], sessionCutoff = 0): ChatM
           source: "voice",
         });
       }
-    } else if (ev.event_type === "llm_response" && p.final !== false) {
+    } else if (ev.event_type === "llm_response") {
       const text = String(p.text || "").trim();
-      if (text && !text.startsWith("```")) {
-        out.push({
-          id: `llm-${ev.ts}`,
+      if (!text || text.startsWith("```")) continue;
+      if (p.final === false) {
+        liveStreamMsg = {
+          id: "live-stream",
           role: "assistant",
           text,
           ts: ev.ts,
-        });
+          streaming: true,
+        };
+      } else if (!liveStreamMsg || liveStreamMsg.streaming) {
+        liveStreamMsg = {
+          id: "live-stream",
+          role: "assistant",
+          text,
+          ts: ev.ts,
+          streaming: false,
+        };
       }
     }
   }
+  if (liveThinkMsg) out.push(liveThinkMsg);
+  if (liveStreamMsg) out.push(liveStreamMsg);
   return out;
 }
 
@@ -98,12 +136,38 @@ function mergeMessages(
   };
   for (const m of history) add(m);
   for (const m of live) add(m);
-  return Array.from(byId.values()).sort(
+  // Drop near-duplicate assistant lines (same text within 8s) — history+telemetry overlap
+  const sorted = Array.from(byId.values()).sort(
     (a, b) => (a.ts || 0) - (b.ts || 0),
   );
+  const out: ChatMessage[] = [];
+  for (const m of sorted) {
+    const prev = out[out.length - 1];
+    if (
+      prev &&
+      prev.role === m.role &&
+      prev.role === "assistant" &&
+      prev.text.trim() === m.text.trim() &&
+      Math.abs((prev.ts || 0) - (m.ts || 0)) < 8
+    ) {
+      continue;
+    }
+    out.push(m);
+  }
+  return out;
 }
 
-export function HudChat({ events }: { events: TelemetryEvent[] }) {
+export function HudChat({
+  events,
+  title = "Command GLaDOS",
+  subtitle = "Type a message — thoughts stream silently; GLaDOS speaks the reply.",
+  className = "",
+}: {
+  events: TelemetryEvent[];
+  title?: string;
+  subtitle?: string;
+  className?: string;
+}) {
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [sessionCutoff, setSessionCutoff] = useState(0);
   const [draft, setDraft] = useState("");
@@ -164,7 +228,7 @@ export function HudChat({ events }: { events: TelemetryEvent[] }) {
 
   useEffect(() => {
     refreshHistory();
-    const t = setInterval(refreshHistory, 2500);
+    const t = setInterval(refreshHistory, 5000);
     return () => clearInterval(t);
   }, [refreshHistory]);
 
@@ -189,11 +253,16 @@ export function HudChat({ events }: { events: TelemetryEvent[] }) {
     };
     setHistory((prev) => [...prev, optimistic]);
     try {
-      await api.chatSend(text);
-      // Do not await history refresh — a slow/hung poll left sending=true and blocked the second HUD message.
+      const res = await api.chatSend(text);
+      if (!res.ok) {
+        setError(res.error || "Kernel inbox busy — wait a moment and retry");
+        setDraft(text);
+        setHistory((prev) => prev.filter((m) => m.id !== optimistic.id));
+        return;
+      }
       void refreshHistory().catch(() => {});
     } catch {
-      setError("Send failed — is the brain API running on port 8080?");
+      setError("Send failed — is the brain API running on port 8888?");
       setDraft(text);
       setHistory((prev) => prev.filter((m) => m.id !== optimistic.id));
     } finally {
@@ -202,11 +271,14 @@ export function HudChat({ events }: { events: TelemetryEvent[] }) {
   }
 
   return (
-    <div className="hud-panel flex h-[min(42vh,440px)] min-h-[300px] flex-col p-3">
+    <div className={`hud-panel flex h-[min(42vh,440px)] min-h-[300px] flex-col p-3 ${className}`}>
       <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-hud-cyan">
-          Text channel
-        </p>
+        <div>
+          <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-hud-cyan">
+            {title}
+          </p>
+          <p className="mt-0.5 font-mono text-[9px] text-hud-cyan/45">{subtitle}</p>
+        </div>
         <span
           className={`font-mono text-[9px] ${
             apiOk === false ? "text-red-400" : "text-hud-cyan/40"
@@ -223,8 +295,8 @@ export function HudChat({ events }: { events: TelemetryEvent[] }) {
       >
         {messages.length === 0 ? (
           <p className="text-hud-cyan/40">
-            Type below — your messages, GLaDOS replies, and her thinking stream
-            appear here.
+            Example: &quot;Research the latest Python release notes&quot; or
+            &quot;Open github.com and summarize the README&quot;
           </p>
         ) : (
           messages.map((m) => (
@@ -255,10 +327,19 @@ export function HudChat({ events }: { events: TelemetryEvent[] }) {
                         ? "You (voice)"
                         : "You"
                     : m.role === "thinking"
-                      ? "Thinking"
+                      ? "GLaDOS thoughts"
                       : "GLaDOS"}
                 </p>
-                <p className="mt-0.5 whitespace-pre-wrap break-words">{m.text}</p>
+                <p className="mt-0.5 whitespace-pre-wrap break-words">
+                  {m.text}
+                  {m.streaming ? (
+                    <span
+                      className={`ml-0.5 inline-block h-3 w-1.5 animate-pulse align-middle ${
+                        m.role === "thinking" ? "bg-violet-300/90" : "bg-orange-300/90"
+                      }`}
+                    />
+                  ) : null}
+                </p>
               </div>
             </div>
           ))
@@ -272,7 +353,7 @@ export function HudChat({ events }: { events: TelemetryEvent[] }) {
           type="text"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder="Message Glados…"
+          placeholder="Command GLaDOS — git push, diagnose, research…"
           disabled={sending}
           className="flex-1 rounded border border-hud-cyan/20 bg-black/40 px-3 py-2 font-mono text-xs text-hud-cyan placeholder:text-hud-cyan/30 focus:border-hud-cyan/50 focus:outline-none"
           maxLength={4000}

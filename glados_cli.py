@@ -115,10 +115,10 @@ def cmd_doctor() -> int:
         print(f"  [!] config file not found (optional): {CONFIG_PATH}")
 
     try:
-        import tensorflow as tf  # noqa: F401
-        print("  [OK] TensorFlow import (Omni-Brain)")
+        import chromadb  # noqa: F401
+        print("  [OK] ChromaDB import (shared swarm brain)")
     except Exception as e:
-        print(f"  [!] TensorFlow: {e} (kernel needs this for intent routing)")
+        print(f"  [!] ChromaDB: {e} (needed for the unified swarm memory)")
 
     print()
     return 0 if ok else 1

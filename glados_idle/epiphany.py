@@ -29,11 +29,29 @@ def is_idle_learning_busy() -> bool:
 def _recent_memory_snippets(cfg: Dict[str, Any], limit: int = 8) -> str:
     lines: List[str] = []
     try:
+        from memory.honcho_store import get_honcho_store
+
+        snap = get_honcho_store(cfg).profile_snapshot()
+        for label, key in (
+            ("user", "user_profile"),
+            ("computer", "computer_profile"),
+            ("card", "user_card"),
+        ):
+            text = str(snap.get(key) or "").strip()
+            if text:
+                lines.append(f"- [{label}] {text[:400]}")
+                if len(lines) >= limit:
+                    break
+    except Exception:
+        pass
+    if lines:
+        return "\n".join(lines)
+    try:
         from memory.chroma_store import ChromaMemoryStore
 
         store = ChromaMemoryStore(cfg)
         if store._collection is None:
-            return ""
+            return "(No recent memories yet.)"
         data = store._collection.get(include=["documents", "metadatas"])
         docs = data.get("documents") or []
         metas = data.get("metadatas") or []
@@ -119,7 +137,9 @@ def run_epiphany_cycle(
     """One autonomous learn cycle: self-question → web scrape → Chroma → speak."""
     if not bool(cfg.get("idle_epiphany_enabled", True)):
         return False
-    if not bool(cfg.get("memory_enable_chroma")):
+    if not bool(cfg.get("memory_enable_chroma")) and not bool(
+        cfg.get("memory_enable_honcho", True)
+    ):
         return False
 
     _set_busy(True)

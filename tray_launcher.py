@@ -5,9 +5,9 @@ Starts the kernel and brain dashboard API. Open the brain UI from the tray menu.
 
 LAN access:
   1. Set brain_dashboard_url in configs/glados.yaml to your PC LAN IP,
-     e.g. http://192.168.1.50:8080
+     e.g. http://192.168.1.50:8888
   2. Windows Firewall (Private network only):
-     netsh advfirewall firewall add rule name="Glados Brain Dashboard" dir=in action=allow protocol=TCP localport=8080 profile=private
+     netsh advfirewall firewall add rule name="Glados Brain Dashboard" dir=in action=allow protocol=TCP localport=8888 profile=private
   3. On phone/tablet (same WiFi): open brain_dashboard_url
 """
 
@@ -31,6 +31,64 @@ if BASE_DIR not in sys.path:
 from glados_config import load_config  # noqa: E402
 
 
+def _python_exe() -> str:
+    """Prefer repo venv so open-interpreter / piper deps resolve."""
+    candidates = [
+        os.path.join(BASE_DIR, "venv", "Scripts", "python.exe"),
+        os.path.join(BASE_DIR, ".venv", "Scripts", "python.exe"),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return sys.executable
+
+
+def _dashboard_port() -> int:
+    cfg = load_config()
+    return int(cfg.get("brain_dashboard_port") or 8888)
+
+
+def _port_listeners(port: int) -> list[str]:
+    """Human-readable owners of a TCP listen port (best-effort)."""
+    rows: list[str] = []
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        psutil = None  # type: ignore
+    if psutil is not None:
+        try:
+            for conn in psutil.net_connections(kind="inet"):
+                if conn.status != "LISTEN":
+                    continue
+                if not conn.laddr or int(conn.laddr.port) != port:
+                    continue
+                pid = conn.pid
+                cmd = f"pid {pid}"
+                if pid:
+                    try:
+                        proc = psutil.Process(pid)
+                        parts = proc.cmdline() or [proc.name()]
+                        cmd = f"PID {pid}: {' '.join(parts[:8])}"
+                    except Exception:
+                        cmd = f"PID {pid}"
+                rows.append(cmd)
+        except Exception:
+            pass
+        if rows:
+            return rows
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("0.0.0.0", port))
+        return []
+    except OSError:
+        return [f"port {port} already in use"]
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
 def _lan_ip() -> str:
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -47,7 +105,7 @@ def _dashboard_url() -> str:
     url = str(cfg.get("brain_dashboard_url") or "").strip()
     if url and "localhost" not in url and "127.0.0.1" not in url:
         return url
-    port = int(cfg.get("brain_dashboard_port") or 8080)
+    port = int(cfg.get("brain_dashboard_port") or 8888)
     flags = _read_flags()
     flag_url = str(flags.get("dashboard_url") or "").strip()
     if flag_url and "localhost" not in flag_url:
@@ -59,9 +117,9 @@ DEFAULT_FLAGS: Dict[str, Any] = {
     "vision_enabled": True,
     "monitoring_enabled": True,
     "cursor_auto_inject": False,
-    "dashboard_url": "http://localhost:8080",
+    "dashboard_url": "http://localhost:8888",
     "streamlit_port": 8501,
-    "brain_dashboard_port": 8080,
+    "brain_dashboard_port": 8888,
 }
 
 
@@ -127,13 +185,13 @@ class ProcessController:
 
 class KernelController(ProcessController):
     def __init__(self) -> None:
-        super().__init__([sys.executable, KERNEL_PATH], "kernel")
+        super().__init__([_python_exe(), KERNEL_PATH], "kernel")
 
 
 class BrainServerController(ProcessController):
     def __init__(self) -> None:
         super().__init__(
-            [sys.executable, "-m", BRAIN_SERVER_MODULE],
+            [_python_exe(), "-m", BRAIN_SERVER_MODULE],
             "brain_server",
         )
 
@@ -155,7 +213,18 @@ def run_tray() -> None:
 
     kernel.start()
     if cfg.get("brain_dashboard_enabled", True):
-        brain.start()
+        port = _dashboard_port()
+        owners = _port_listeners(port)
+        if owners:
+            print(f"[tray] port {port} already in use — not starting a second dashboard:")
+            for row in owners:
+                print(f"        {row}")
+            print(
+                "[tray] Close the other GLaDOS window (use venv python only), "
+                "then Restart Brain Dashboard from this tray."
+            )
+        else:
+            brain.start()
 
     icon_ref = {"icon": None}
 
@@ -172,9 +241,15 @@ def run_tray() -> None:
         brain.restart()
 
     def open_dashboard(_: Any = None) -> None:
-        url = _dashboard_url().rstrip("/") + "/hud/"
+        url = _dashboard_url().rstrip("/") + "/"
         print(f"[tray] Opening command center: {url}")
-        webbrowser.open(url)
+        chrome = os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe")
+        if not os.path.isfile(chrome):
+            chrome = os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe")
+        if os.path.isfile(chrome):
+            subprocess.Popen([chrome, url], cwd=BASE_DIR)
+        else:
+            webbrowser.open(url)
 
     icon_img = Image.new("RGB", (64, 64), (30, 30, 30))
     d = ImageDraw.Draw(icon_img)

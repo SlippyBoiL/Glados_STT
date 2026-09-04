@@ -72,6 +72,7 @@ _ACTION_HINTS = (
     "commit ",
     "sync ",
     "check pihole",
+    "check proxmox",
     "monitor ",
     "restart ",
     "turn on",
@@ -85,6 +86,13 @@ _ACTION_HINTS = (
     "search for ",
     "google ",
     "look up ",
+    "call me",
+    "call my",
+    "dial me",
+    "dial my",
+    "ring me",
+    "phone me",
+    "give me a call",
 )
 
 
@@ -143,6 +151,10 @@ def handle_task(
       2. Else learn on the spot (save to brain) and run it
     Returns (handled, assistant_message).
     """
+    cfg = cfg or {}
+    # swarm_routing_only disables multi-agent swarm — NOT learned skills / direct actions.
+    # Skills and direct_actions still run in single-brain mode.
+
     matched = skills.match(user_input, top_k=3)
 
     try:
@@ -155,8 +167,7 @@ def handle_task(
             telemetry_path=telemetry_path,
         )
         if direct_ok is not None:
-            if direct_ok and speak_fn:
-                speak_fn(direct_msg[:200])
+            # Kernel owns speak + HUD logging — do not speak here (avoids double reply).
             return bool(direct_ok), direct_msg
     except Exception:
         pass

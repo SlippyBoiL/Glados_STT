@@ -31,7 +31,7 @@ export function ThoughtPipeline({ events }: Props) {
       {timeline.length === 0 ? (
         <p className="text-sm text-aperture-muted">
           Waiting for Glados to think… open the{" "}
-          <a href="/hud/" className="text-aperture-orange underline">
+          <a href="/" className="text-aperture-orange underline">
             Command Center
           </a>{" "}
           to chat and watch thoughts stream in.

@@ -106,7 +106,7 @@ export function BrainStatusPanel({
       {!isHud ? (
         <div className="mt-4 flex flex-wrap gap-2">
           <Link
-            href="/hud/"
+            href="/"
             className="rounded border border-aperture-orange/40 px-3 py-1.5 text-xs text-aperture-orange hover:bg-aperture-orange/10"
           >
             Command Center →

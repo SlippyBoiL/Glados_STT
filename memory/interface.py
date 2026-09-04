@@ -7,6 +7,11 @@ from .chroma_store import ChromaMemoryStore
 from .computer_brain_store import ComputerBrainStore
 from .static_store import StaticMemoryStore
 
+try:
+    from .honcho_store import get_honcho_store
+except Exception:  # pragma: no cover
+    get_honcho_store = None  # type: ignore
+
 
 def _repo_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -81,13 +86,29 @@ def retrieve_memory_context(
     include_static: bool = True,
     include_chroma: bool = True,
     include_computer_brain: bool = True,
+    include_honcho: bool = True,
+    conversational: bool = False,
 ) -> str:
     """
     Returns a formatted memory context string to inject into the system prompt.
 
-    Computer brain (facility scan) is always merged when enabled.
+    Honcho (peer profiles + dialectic) is primary. Computer brain and static
+    facts still fill gaps. Chroma is optional legacy retrieval.
     """
     parts: List[str] = []
+
+    if include_honcho and bool(cfg.get("memory_enable_honcho", True)) and get_honcho_store:
+        try:
+            honcho = get_honcho_store(cfg)
+            honcho_block = honcho.retrieve(
+                user_input,
+                conversational=conversational,
+                top_k=top_k,
+            )
+            if honcho_block:
+                parts.append(honcho_block)
+        except Exception:
+            pass
 
     if include_computer_brain:
         computer_block = retrieve_computer_brain_context(user_input, cfg, top_k=max(top_k, 5))
@@ -121,21 +142,25 @@ def retrieve_memory_context(
     if not parts:
         pass  # may still get shared brain hits below
 
-    # Shared swarm brain (cross-agent Chroma insights)
-    try:
-        from plugins.shared_memory import query_brain_context  # type: ignore
-    except Exception:
+    # Shared swarm brain (cross-agent Chroma insights) — same embedding path as Chroma.
+    if include_chroma:
         try:
-            from shared_memory import query_brain_context  # type: ignore
+            from plugins.shared_memory import query_brain_context  # type: ignore
         except Exception:
-            query_brain_context = None  # type: ignore
-    if query_brain_context:
-        shared_block = query_brain_context(user_input, limit=top_k)
-        if shared_block:
-            parts.append(shared_block)
+            try:
+                from shared_memory import query_brain_context  # type: ignore
+            except Exception:
+                query_brain_context = None  # type: ignore
+        if query_brain_context:
+            shared_block = query_brain_context(user_input, limit=top_k)
+            if shared_block:
+                parts.append(shared_block)
 
     if not parts:
-        return "No relevant memory found. Run a facility scan to populate the computer brain."
+        return (
+            "No relevant memory found. Start Honcho (`scripts/start_honcho.ps1`) "
+            "and run a facility scan so GLaDOS can model you and this PC."
+        )
     return "\n".join(parts)
 
 
@@ -182,14 +207,30 @@ def remember_os_action(
 
 
 def add_memory_event(event: Dict[str, Any], cfg: Dict[str, Any]) -> None:
-    """
-    Persist a dynamic memory event to Chroma (if enabled).
-    """
+    """Persist a dynamic memory event to Honcho (primary) and Chroma (optional)."""
+    if bool(cfg.get("memory_enable_honcho", True)) and get_honcho_store:
+        try:
+            get_honcho_store(cfg).add_event(event)
+        except Exception:
+            pass
     try:
-        if not bool(cfg.get("memory_enable_chroma")):
-            return
-        chroma_store = ChromaMemoryStore(cfg)
-        chroma_store.add_events([event])
+        if bool(cfg.get("memory_enable_chroma")):
+            chroma_store = ChromaMemoryStore(cfg)
+            chroma_store.add_events([event])
+    except Exception:
+        return
+
+
+def record_conversation_turn(
+    user_text: str,
+    assistant_text: str,
+    cfg: Dict[str, Any],
+) -> None:
+    """Write a full user/assistant turn into Honcho's daily session."""
+    if not bool(cfg.get("memory_enable_honcho", True)) or not get_honcho_store:
+        return
+    try:
+        get_honcho_store(cfg).record_turn(user_text, assistant_text)
     except Exception:
         return
 

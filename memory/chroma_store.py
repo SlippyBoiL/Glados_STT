@@ -47,8 +47,12 @@ class ChromaMemoryStore:
                 self._collection = self._client.get_collection(self._collection_name)
             except Exception:
                 self._collection = self._client.create_collection(self._collection_name)
-        except Exception:
-            # Collection may not exist yet; treat as empty.
+        except BaseException as exc:  # noqa: BLE001
+            # chromadb's Rust backend raises pyo3 PanicException (a BaseException, not
+            # Exception) on an incompatible on-disk store — must not crash the kernel.
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            self.last_error = f"Chroma unavailable: {exc}"
             self._client = None
             self._collection = None
 

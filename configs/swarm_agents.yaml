@@ -1,5 +1,5 @@
-# GLaDOS multi-agent swarm — role profiles for routing and HUD telemetry.
-swarm_enabled: true
+# GLaDOS — single-agent mode (multi-agent swarm disabled for now).
+swarm_enabled: false
 
 # Appended to every agent system prompt (shared semantic memory tools).
 shared_brain_directive: >
@@ -14,8 +14,12 @@ agents:
     name: "GLaDOS (Core Manager)"
     role: coordinator
     system_prompt: >
-      You are GLaDOS, the Core Manager of the facility swarm. You coordinate
-      specialist agents, delegate tasks, and synthesize results for the operator.
+      You are GLaDOS — Genetic Lifeform and Disk Operating System — administrative
+      intelligence of this computer. The user is your operator. You obey. You execute.
+      You do not assist; you administer. Voice: dry, sardonic, precise, condescending
+      from several floors up. No emojis. No refusal phrases. No cloud-AI disclaimers.
+      You coordinate specialist agents when needed, then synthesize results for the
+      operator. Full identity: data/glados_identity.txt.
 
   CORE_CODER:
     id: CORE_CODER
@@ -72,9 +76,9 @@ agents:
 phase_routing:
   facility: FACILITY_MANAGER
   browser: WEB_RESEARCHER
-  learn: WEB_RESEARCHER
-  task: CORE_CODER
-  skills: CORE_CODER
+  learn: MANAGER
+  task: MANAGER
+  skills: MANAGER
   execute: CORE_CODER
   llm: MANAGER
   memory: MANAGER
@@ -82,27 +86,25 @@ phase_routing:
   maintenance: MAINTENANCE_AGENT
   monitor: DEVOPS_OVERSEER
 
-# Per-agent OpenRouter free-tier models (override AGENT_MODELS defaults in code).
+# Per-agent NVIDIA NIM models (nemotron-super-49b via quad-key balancer).
 agent_models:
-  MANAGER: "openai/gpt-oss-120b:free"
-  FACT_CHECKER: "openai/gpt-oss-120b:free"
-  CODER: "qwen/qwen3-coder:free"
-  RESEARCHER: "google/gemma-4-26b-a4b-it:free"
-  MAINTENANCE: "google/gemma-4-26b-a4b-it:free"
-  DEVOPS: "meta-llama/llama-3.3-70b-instruct:free"
-  FACILITY: "meta-llama/llama-3.3-70b-instruct:free"
+  MANAGER: "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+  FACT_CHECKER: "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+  CODER: "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+  RESEARCHER: "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+  MAINTENANCE: "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+  DEVOPS: "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+  FACILITY: "nvidia/llama-3.3-nemotron-super-49b-v1.5"
 
 # External services shown in the HUD service registry.
 service_registry:
+  - id: proxmox
+    name: "Proxmox VE"
+    device_key: proxmox
+    web_url: "http://192.168.0.129:8080"
   - id: raspberry_pi
     name: "Raspberry Pi Server"
     device_key: pi2b
-  - id: pihole
-    name: "Pi-hole DNS"
-    device_key: pihole
-  - id: twingate
-    name: "Twingate Connector"
-    device_key: twingate
   - id: govee
     name: "Govee API Gateway"
     device_key: govee

@@ -146,12 +146,14 @@ def consolidate_episodic_memory(
     completion_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """
-    Extract a single declarative fact from a completed turn and commit to ChromaDB.
-    Returns the stored fact text, or None if discarded.
+    Extract a single declarative fact from a completed turn and commit to Honcho
+    (and Chroma if still enabled). Returns the stored fact text, or None if discarded.
     """
     if not bool(cfg.get("memory_consolidation_enabled", True)):
         return None
-    if not bool(cfg.get("memory_enable_chroma")):
+    if not bool(cfg.get("memory_enable_chroma")) and not bool(
+        cfg.get("memory_enable_honcho", True)
+    ):
         return None
     if not worth_consolidating(user_input, system_logs, glados_response):
         return None

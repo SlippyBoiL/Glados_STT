@@ -13,7 +13,7 @@ export function CommandOverrideBar({ disabled = false, connected = true }: Props
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const isDisabled = disabled || sending || !connected;
+  const isDisabled = disabled || sending;
 
   async function submitCommand() {
     const text = commandInput.trim();
@@ -49,7 +49,11 @@ export function CommandOverrideBar({ disabled = false, connected = true }: Props
         onChange={(e) => setCommandInput(e.target.value)}
         onKeyDown={onKeyDown}
         disabled={isDisabled}
-        placeholder="> Enter manual override command..."
+        placeholder={
+          connected === false
+            ? "> API chat still works — WebSocket reconnecting…"
+            : "> Enter manual override command..."
+        }
         aria-label="Manual override command"
         className="w-full rounded border border-hud-cyan/20 bg-black/50 px-4 py-3 font-mono text-sm text-hud-cyan placeholder:text-hud-cyan/35 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/50 disabled:cursor-not-allowed disabled:opacity-50"
       />

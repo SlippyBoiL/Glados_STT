@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sys
 import threading
 import time
 import uuid
@@ -11,10 +12,41 @@ from typing import Any, Dict, Iterator, List, Optional
 from glados_paths import resolve_plugins_dir
 
 _lock = threading.Lock()
+_POPPED_META: Dict[str, Dict[str, Any]] = {}
 
 # Cross-process inbox lock (brain_server + kernel). Held briefly; stale locks are reclaimed.
-_INBOX_LOCK_STALE_SEC = 8.0
-_INBOX_LOCK_WAIT_SEC = 20.0
+_INBOX_LOCK_STALE_SEC = 4.0
+_INBOX_LOCK_WAIT_SEC = 8.0
+
+
+def _pid_alive(pid: int) -> bool:
+    """Return True if ``pid`` is a running process (Windows-safe)."""
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                return False
+            kernel32.CloseHandle(handle)
+            return True
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def clear_inbox_lock_file(cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """Drop orphan inbox lock (safe at kernel boot)."""
+    lock_path = inbox_path(cfg) + ".lock"
+    return _clear_stale_inbox_lock(lock_path, max_age_sec=0)
 
 
 def _clear_stale_inbox_lock(lock_path: str, max_age_sec: float = _INBOX_LOCK_STALE_SEC) -> bool:
@@ -23,25 +55,67 @@ def _clear_stale_inbox_lock(lock_path: str, max_age_sec: float = _INBOX_LOCK_STA
         return False
     try:
         age = time.time() - os.path.getmtime(lock_path)
+        try:
+            with open(lock_path, "r", encoding="utf-8") as f:
+                raw = (f.read() or "").strip()
+        except Exception:
+            raw = ""
+        if not raw:
+            os.unlink(lock_path)
+            return True
+        if raw.isdigit():
+            pid = int(raw)
+            if _pid_alive(pid) and max_age_sec > 0 and age < max_age_sec:
+                return False
         if max_age_sec > 0 and age < max_age_sec:
-            try:
-                with open(lock_path, "r", encoding="utf-8") as f:
-                    raw = (f.read() or "").strip()
-                if raw.isdigit():
-                    pid = int(raw)
-                    if pid > 0:
-                        try:
-                            os.kill(pid, 0)
-                            return False
-                        except OSError:
-                            pass
-            except Exception:
-                if max_age_sec > 0 and age < max_age_sec:
-                    return False
+            return False
         os.unlink(lock_path)
         return True
     except OSError:
         return False
+
+
+def _acquire_inbox_lock_fd(lock_path: str) -> int:
+    """Cross-process mutex using the lock file (Windows-safe; no O_EXCL orphans)."""
+    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+    try:
+        os.write(fd, str(os.getpid()).encode("ascii"))
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        import msvcrt
+
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            os.close(fd)
+            raise
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def _release_inbox_lock_fd(fd: Optional[int]) -> None:
+    if fd is None:
+        return
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
 
 
 @contextlib.contextmanager
@@ -50,40 +124,29 @@ def _inbox_exclusive(path: str) -> Iterator[None]:
     lock_path = path + ".lock"
     fd: Optional[int] = None
     deadline = time.time() + _INBOX_LOCK_WAIT_SEC
+    last_err: Optional[Exception] = None
     while time.time() < deadline:
+        _clear_stale_inbox_lock(lock_path)
         try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
-            try:
-                os.write(fd, str(os.getpid()).encode("ascii"))
-            except Exception:
-                pass
+            fd = _acquire_inbox_lock_fd(lock_path)
             break
-        except FileExistsError:
-            _clear_stale_inbox_lock(lock_path)
-            time.sleep(0.025)
+        except OSError as exc:
+            last_err = exc
+            if fd is not None:
+                _release_inbox_lock_fd(fd)
+                fd = None
+            time.sleep(0.03)
     else:
         _clear_stale_inbox_lock(lock_path, max_age_sec=0)
         try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
-            try:
-                os.write(fd, str(os.getpid()).encode("ascii"))
-            except Exception:
-                pass
-        except FileExistsError as exc:
-            raise TimeoutError(f"inbox lock timeout: {path}") from exc
+            fd = _acquire_inbox_lock_fd(lock_path)
+        except OSError as exc:
+            raise TimeoutError(f"inbox lock timeout: {path}") from (last_err or exc)
     try:
         with _lock:
             yield
     finally:
-        if fd is not None:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        try:
-            os.unlink(lock_path)
-        except OSError:
-            pass
+        _release_inbox_lock_fd(fd)
 
 
 def _plugins_dir(cfg: Optional[Dict[str, Any]] = None) -> str:
@@ -167,8 +230,15 @@ def clear_chat_on_startup(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any
 
     return sess
 
-def enqueue_user_message(text: str, cfg: Optional[Dict[str, Any]] = None) -> str:
-    """HUD → kernel: queue a message for Glados to process."""
+def enqueue_user_message(
+    text: str,
+    cfg: Optional[Dict[str, Any]] = None,
+    *,
+    source: str = "hud",
+    telegram_chat_id: Any = None,
+    telegram_message_id: Any = None,
+) -> str:
+    """HUD / SMS / Telegram / Voice AI → kernel: queue a message for Glados to process."""
     msg_id = str(uuid.uuid4())[:12]
     line = {
         "id": msg_id,
@@ -176,8 +246,12 @@ def enqueue_user_message(text: str, cfg: Optional[Dict[str, Any]] = None) -> str
         "text": (text or "").strip(),
         "ts": time.time(),
         "status": "pending",
-        "source": "hud",
+        "source": (source or "hud").strip() or "hud",
     }
+    if telegram_chat_id is not None and str(telegram_chat_id).strip() != "":
+        line["telegram_chat_id"] = telegram_chat_id
+    if telegram_message_id is not None and str(telegram_message_id).strip() != "":
+        line["telegram_message_id"] = telegram_message_id
     if not line["text"]:
         return ""
     path = inbox_path(cfg)
@@ -189,6 +263,7 @@ def enqueue_user_message(text: str, cfg: Optional[Dict[str, Any]] = None) -> str
                 f.write(json.dumps(line, ensure_ascii=False) + "\n")
             _append_history_unlocked(line, cfg)
     except TimeoutError:
+        print(f"[!] HUD inbox busy — could not queue message (lock timeout on {path})")
         return ""
     return msg_id
 
@@ -226,6 +301,7 @@ def _release_stuck_processing(path: str, *, max_age_sec: float = 15.0) -> int:
 
 def recover_inbox_on_startup(cfg: Optional[Dict[str, Any]] = None) -> int:
     """Reset stuck 'processing' rows so HUD messages work after a crash or restart."""
+    clear_inbox_lock_file(cfg)
     path = inbox_path(cfg)
     if not os.path.isfile(path):
         return 0
@@ -285,7 +361,7 @@ def mark_message_done(msg_id: str, cfg: Optional[Dict[str, Any]] = None) -> None
 def pop_pending_message(
     cfg: Optional[Dict[str, Any]] = None,
     *,
-    stale_processing_sec: float = 600.0,
+    stale_processing_sec: float = 45.0,
 ) -> tuple[Optional[str], Optional[str]]:
     """Kernel: take oldest pending (or stale processing) HUD message. Returns (text, msg_id)."""
     path = inbox_path(cfg)
@@ -294,7 +370,7 @@ def pop_pending_message(
     now = time.time()
     try:
         with _inbox_exclusive(path):
-            _release_stuck_processing(path, max_age_sec=15.0)
+            _release_stuck_processing(path, max_age_sec=20.0)
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     lines = [ln.strip() for ln in f.readlines() if ln.strip()]
@@ -340,9 +416,28 @@ def pop_pending_message(
             with open(path, "w", encoding="utf-8") as f:
                 for ln in remaining:
                     f.write(ln + "\n")
+            if msg_id:
+                _POPPED_META[msg_id] = {
+                    "source": str(chosen.get("source") or "hud"),
+                    "telegram_chat_id": chosen.get("telegram_chat_id"),
+                    "telegram_message_id": chosen.get("telegram_message_id"),
+                }
+                if len(_POPPED_META) > 40:
+                    extra = list(_POPPED_META.keys())[:-20]
+                    for key in extra:
+                        _POPPED_META.pop(key, None)
             return (text if text else None), (msg_id if msg_id else None)
     except TimeoutError:
+        print(f"[!] HUD inbox lock timeout while reading {path}")
         return None, None
+
+
+def get_popped_meta(msg_id: Optional[str]) -> Dict[str, Any]:
+    """Reply routing for the inbox row the kernel just claimed."""
+    if not msg_id:
+        return {}
+    meta = _POPPED_META.get(msg_id) or {}
+    return dict(meta)
 
 
 def append_user_message(text: str, cfg: Optional[Dict[str, Any]] = None, *, source: str = "terminal") -> None:
@@ -357,15 +452,18 @@ def append_user_message(text: str, cfg: Optional[Dict[str, Any]] = None, *, sour
         _append_history(line, cfg)
 
 
-def append_assistant_message(text: str, cfg: Optional[Dict[str, Any]] = None) -> None:
+def append_assistant_message(text: str, cfg: Optional[Dict[str, Any]] = None) -> str:
+    msg_id = str(uuid.uuid4())[:12]
     line = {
-        "id": str(uuid.uuid4())[:12],
+        "id": msg_id,
         "role": "assistant",
         "text": (text or "").strip(),
         "ts": time.time(),
     }
     if line["text"]:
         _append_history(line, cfg)
+        return msg_id
+    return ""
 
 
 def _append_history_unlocked(line: Dict[str, Any], cfg: Optional[Dict[str, Any]] = None) -> None:

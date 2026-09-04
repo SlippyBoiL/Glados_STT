@@ -5,30 +5,19 @@
 #
 # Example:
 # devices:
-#   pi:
-#     host: "192.168.1.174"
-#     user: "slippy"
+#   proxmox:
+#     host: "192.168.0.129"
+#     user: "root"
 #     port: 22
-#   nas:
-#     host: "192.168.1.144"
-#     user: "slippy"
 devices:
-  pihole:
-    host: "192.168.1.174"
-    user: "slippy"
+  proxmox:
+    host: "192.168.0.129"
+    user: "root"
     port: 22
+    web_url: "http://192.168.0.129:8080"
     # Provide the password at runtime via env var (do NOT store the password here):
-    #   set SSH_PASSWORD_PIHOLE=...
-    password_env: "SSH_PASSWORD_PIHOLE"
-
-  twingate:
-    # Same host as pihole (different service/container on the same box)
-    host: "192.168.1.174"
-    user: "slippy"
-    port: 22
-    # Provide at runtime:
-    #   set SSH_PASSWORD_TWINGATE=...
-    password_env: "SSH_PASSWORD_TWINGATE"
+    #   set SSH_PASSWORD_PROXMOX=...
+    password_env: "SSH_PASSWORD_PROXMOX"
 
   pi2b:
     # IP not provided yet
@@ -36,4 +25,3 @@ devices:
     user: "slippy"
     port: 22
     password_env: "SSH_PASSWORD_PI2B"
-

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import platform
 import re
+import shutil
 import urllib.parse
 import webbrowser
 from typing import Tuple
@@ -37,16 +38,18 @@ def search_url(query: str, engine: str = DEFAULT_ENGINE) -> str:
     return f"https://www.google.com/search?q={q}"
 
 
-def open_browser_search(query: str, engine: str = DEFAULT_ENGINE, browser: str = "default") -> Tuple[bool, str]:
+def open_browser_search(query: str, engine: str = DEFAULT_ENGINE, browser: str = "chrome") -> Tuple[bool, str]:
     if not (query or "").strip():
         return False, "No search query found. Try: search the web for weather in Seattle."
 
     url = search_url(query, engine)
     opened = False
-    browser_key = (browser or "default").lower()
+    browser_key = (browser or "chrome").lower()
+    if browser_key in ("default", ""):
+        browser_key = "chrome"
 
     # Prefer explicit browser binary on Windows when configured
-    if platform.system() == "Windows" and browser_key not in ("default", ""):
+    if platform.system() == "Windows":
         paths = {
             "chrome": [
                 os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
@@ -62,13 +65,19 @@ def open_browser_search(query: str, engine: str = DEFAULT_ENGINE, browser: str =
                 os.path.expandvars(r"%ProgramFiles(x86)%\Mozilla Firefox\firefox.exe"),
             ],
         }
-        for exe in paths.get(browser_key, []):
+        for exe in paths.get(browser_key, paths["chrome"]):
             if exe and os.path.isfile(exe):
                 os.spawnl(os.P_NOWAIT, exe, exe, url)
                 opened = True
                 break
 
     if not opened:
-        webbrowser.open(url, new=2)
+        # Last resort: still try Chrome via PATH before OS default (may be DuckDuckGo)
+        chrome = shutil.which("chrome") or shutil.which("google-chrome")
+        if chrome:
+            os.spawnl(os.P_NOWAIT, chrome, chrome, url)
+            opened = True
+        else:
+            webbrowser.open(url, new=2)
 
-    return True, f"Opened browser — searching for: {query}"
+    return True, f"Opened Chrome — searching for: {query}"

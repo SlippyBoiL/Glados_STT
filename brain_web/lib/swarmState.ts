@@ -1,9 +1,11 @@
 import type {
+  ExecutionLogEntry,
   SwarmAgentId,
   SwarmAgentState,
   SwarmAgentStatus,
   SwarmDashboardState,
   TelemetryEvent,
+  TerminalLine,
 } from "./types";
 
 export const SWARM_ROSTER: { id: SwarmAgentId; name: string }[] = [
@@ -88,6 +90,8 @@ export function initialSwarmState(): SwarmDashboardState {
   return {
     agents: defaultAgents(),
     monologue: [],
+    executionLog: [],
+    terminalLog: [],
     maintenanceLog: [],
     metrics: { cpu: 0, ram: 0, disk: 0 },
     services: DEFAULT_SERVICES.map((s) => ({
@@ -187,16 +191,119 @@ function formatMaintenanceLine(ev: TelemetryEvent): string {
   return `[MAINTENANCE] ${ts} — ${msg}`.slice(0, 400);
 }
 
+function appendTerminalLog(
+  state: SwarmDashboardState,
+  line: TerminalLine,
+  max = 250,
+): SwarmDashboardState {
+  return {
+    ...state,
+    terminalLog: [...state.terminalLog, line].slice(-max),
+  };
+}
+
+function appendExecutionLog(
+  state: SwarmDashboardState,
+  entry: ExecutionLogEntry,
+  max = 120,
+): SwarmDashboardState {
+  return {
+    ...state,
+    executionLog: [...state.executionLog, entry].slice(-max),
+  };
+}
+
+function formatToolIntentLine(ev: TelemetryEvent): string {
+  const p = ev.payload || {};
+  const tool = String(p.tool || "unknown");
+  if (tool === "execute_powershell") {
+    const cmd = String(p.command || "");
+    return `[SYSTEM EXECUTION] -> powershell -Command "${cmd}"`;
+  }
+  if (tool === "read_local_file") {
+    return `[SYSTEM EXECUTION] -> read_local_file "${String(p.file_path || "")}"`;
+  }
+  if (tool === "write_local_file") {
+    return `[SYSTEM EXECUTION] -> write_local_file "${String(p.file_path || "")}"`;
+  }
+  const cmd = String(p.command || "");
+  if (cmd) {
+    return `[SYSTEM EXECUTION] -> ${tool}: ${cmd}`;
+  }
+  const preview = String(p.content_preview || "");
+  if (preview) {
+    return `[SYSTEM EXECUTION] -> ${tool}: ${preview}`;
+  }
+  return `[SYSTEM EXECUTION] -> ${tool}`;
+}
+
+function formatToolResultLine(ev: TelemetryEvent): string {
+  const p = ev.payload || {};
+  const output = String(p.output || "").slice(0, 500);
+  return `    > Output: ${output}`;
+}
+
 export function reduceSwarmEvent(
   state: SwarmDashboardState,
   ev: TelemetryEvent,
 ): SwarmDashboardState {
+  if (ev.event_type === "tool_intent") {
+    const agentId = resolveAgentId(ev.payload || {}) || "MANAGER";
+    const text = formatToolIntentLine(ev);
+    const entry: ExecutionLogEntry = {
+      id: `intent-${ev.ts}-${text.slice(0, 24)}`,
+      kind: "tool_intent",
+      text,
+    };
+    let next = appendExecutionLog(state, entry);
+    next = appendTerminalLog(next, { ...entry, kind: "tool_intent" });
+    next = updateAgent(next, agentId, {
+      status: "thinking",
+      currentSubtask: "Executing system tool…",
+    });
+    return next;
+  }
+
+  if (ev.event_type === "tool_result") {
+    const agentId = resolveAgentId(ev.payload || {}) || "MANAGER";
+    const text = formatToolResultLine(ev);
+    const entry: ExecutionLogEntry = {
+      id: `result-${ev.ts}-${text.slice(0, 24)}`,
+      kind: "tool_result",
+      text,
+    };
+    let next = appendExecutionLog(state, entry);
+    next = appendTerminalLog(next, { ...entry, kind: "tool_result" });
+    next = updateAgent(next, agentId, {
+      status: "thinking",
+      currentSubtask: "System tool finished",
+    });
+    return next;
+  }
+
+  const logLine = formatLogLine(ev);
   let next: SwarmDashboardState = {
     ...state,
-    monologue: appendMonologue(state, formatLogLine(ev)),
+    monologue: appendMonologue(state, logLine),
   };
+  next = appendTerminalLog(next, {
+    id: `tel-${ev.ts}-${logLine.slice(0, 20)}`,
+    kind: "telemetry",
+    text: logLine,
+  });
 
   const p = ev.payload || {};
+
+  if (ev.event_type === "chat_session_reset") {
+    return {
+      ...next,
+      agents: defaultAgents(),
+      agentMonologue: [],
+      executionLog: [],
+      terminalLog: [],
+      activeAgentId: null,
+    };
+  }
 
   if (ev.event_type === "user_text_prompt") {
     const text = String(p.text || "");
@@ -346,19 +453,45 @@ export function reduceSwarmEvent(
     intent_classified: "QA_FACT_CHECKER",
     llm_response: "MANAGER",
     heard: "MANAGER",
+    hud_chat: "MANAGER",
+    user_text_prompt: "MANAGER",
   };
 
   const mapped = eventAgentMap[ev.event_type];
   if (mapped) {
-    const idleAfter = ["llm_response", "code_executed", "facility_brain"];
-    const msg = String(p.message || p.text || ev.event_type);
-    const status = idleAfter.includes(ev.event_type) ? "idle" : "thinking";
+    const idleAfter = [
+      "llm_response",
+      "code_executed",
+      "facility_brain",
+      "heard",
+      "intent_classified",
+      "hud_chat",
+      "skills_matched",
+    ];
+    const msg =
+      String(
+        p.message ||
+          p.text ||
+          (ev.event_type === "intent_classified" && p.category
+            ? `Routed: ${p.category}`
+            : ""),
+      ).trim() || "Standing by";
+    // Assistant HUD replies always clear busy; user prompts stay thinking briefly
+    let status: SwarmAgentStatus = idleAfter.includes(ev.event_type)
+      ? "idle"
+      : "thinking";
+    if (ev.event_type === "hud_chat" && p.role === "user") {
+      status = "thinking";
+    }
+    if (ev.event_type === "hud_chat" && p.role === "assistant") {
+      status = "idle";
+    }
     next = updateAgent(next, mapped, {
       status,
-      currentSubtask: msg,
+      currentSubtask: status === "idle" ? "Standing by" : msg.slice(0, 120),
       lastMessage: String(p.text || p.message || ""),
     });
-    if (status === "thinking" && msg) {
+    if (status === "thinking" && msg && msg !== "Standing by") {
       next = appendAgentMonologue(next, mapped, msg);
     }
   }
@@ -366,9 +499,10 @@ export function reduceSwarmEvent(
   return next;
 }
 
-export function isManagerBusy(swarm: SwarmDashboardState): boolean {
-  const manager = swarm.agents.MANAGER;
-  return manager.status === "thinking" || manager.status === "recovering";
+export function isManagerBusy(_swarm: SwarmDashboardState): boolean {
+  // Never hard-lock the chat input — thinking is visual only.
+  // (Previously swarm_telemetry "thinking" on send locked chat forever after direct actions.)
+  return false;
 }
 
 export function buildSwarmState(events: TelemetryEvent[]): SwarmDashboardState {

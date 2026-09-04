@@ -57,7 +57,11 @@ class SharedBrain:
                 self._collection = self._client.get_collection(self._collection_name)
             except Exception:
                 self._collection = self._client.create_collection(self._collection_name)
-        except Exception as exc:
+        except BaseException as exc:  # noqa: BLE001
+            # chromadb's Rust backend raises pyo3 PanicException (a BaseException) on an
+            # incompatible on-disk store; degrade instead of crashing the swarm brain.
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
             self.last_error = str(exc)
             self._client = None
             self._collection = None

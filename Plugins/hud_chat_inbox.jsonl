@@ -1,0 +1,2 @@
+{"id": "4a4621af-434", "role": "user", "text": "Push the current project to GitHub. If a repository or branch needs to be selected, use the currently open project’s configured remote and default branch.", "ts": 1788555877.6474898, "status": "processing", "source": "voice-ai", "telegram_chat_id": 8958755096}
+{"id": "cdff21c7-93c", "role": "user", "text": "Push the current project to GitHub.", "ts": 1788555876.1167603, "status": "pending", "source": "voice-ai", "telegram_chat_id": 8958755096}

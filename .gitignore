@@ -7,7 +7,11 @@ data/computer_brain_memory.json
 data/facility_file_index.json
 data/glados_skills_brain.json
 data/glados_browser_profile/
+data/glados_google_voice_profile/
 data/glados_browser_session.json
+data/inkbox_call_bridge.json
+data/telegram_inbox_state.json
+data/inkbox_task_inbox_state.json
 
 # Large / generated — keeps `git push` fast (was staging wav + onnx + screen buffer)
 *.wav
@@ -18,3 +22,6 @@ tensorboard_logs/
 .pytest_cache/
 .mypy_cache/
 .cursor/
+.env
+honcho/.env
+configs/glados.local.yaml

@@ -80,7 +80,9 @@ class FacilityExecutor:
             query = str(params.get("query") or "")
             engine = str(self._cfg.get("web_search_engine") or "google")
             profile = ((state.get("deep") or {}).get("user_profile")) or {}
-            browser = str(profile.get("preferred_browser") or self._cfg.get("preferred_browser") or "default")
+            browser = str(profile.get("preferred_browser") or self._cfg.get("preferred_browser") or "chrome")
+            if browser.lower() in ("default", ""):
+                browser = "chrome"
             from facility_brain.web_search import open_browser_search
 
             ok, msg = open_browser_search(query, engine=engine, browser=browser)

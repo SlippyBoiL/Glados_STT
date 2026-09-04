@@ -4,30 +4,55 @@
 # model_name / vision_model must match `ollama list` exactly (case-sensitive). Example:
 #   ollama pull llama3.2-vision
 
-# --- LLM provider: openclaw (gateway) — all inference routes through OpenClaw ---
-# OpenClaw routes chat, vision, and embeddings to configured backends (OpenRouter, local, etc.)
-llm_provider: "openclaw"
+# --- LLM provider: Hermes Agent local llama.cpp (chat + native function calling) ---
+# Leave Hermes Agent running. GLaDOS reads %LOCALAPPDATA%\hermes\runtimes\llamacpp\server.json
+# for the API key. Do not put llama.cpp on port 8000 (Honcho).
+llm_provider: "hermes"
+hermes_base_url: "http://127.0.0.1:18434/v1"
+hermes_model: "Qwen3.6-35B-A3B-UD-Q4_K_M"
+# Optional override if Hermes is down; unused while llm_provider is hermes:
+nvidia_base_url: "https://integrate.api.nvidia.com/v1"
+# Probe NIM for a Hermes id at boot. If the catalog has none, OpenRouter Hermes
+# is used when OPENROUTER_API_KEY is set; otherwise Nemotron Super stays as failover.
+nvidia_prefer_hermes: false
+hermes_openrouter_model: "nousresearch/hermes-3-llama-3.1-70b"
+nvidia_model: "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+# One model per API key (load balancer rotates keys + models on failover)
+# NOTE: meta/llama-3.3-70b-instruct currently hangs on this NIM account — do not use as primary.
+nvidia_endpoint_models:
+  - "nvidia/llama-3.3-nemotron-super-49b-v1.5"  # unused unless llm_provider: nvidia
+  - "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+  - "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+model_name: "Qwen3.6-35B-A3B-UD-Q4_K_M"
+vision_model: "Qwen3.6-35B-A3B-UD-Q4_K_M"
+# NVIDIA keys in .env are unused while llm_provider is hermes.
+local_failover_base_url: "http://192.168.0.102:5000/v1"
+local_failover_model: "deepseek-moe"
+ollama_base_url: "http://192.168.0.102:5000/v1"
+
+# Legacy OpenClaw gateway (only if llm_provider: openclaw)
 openclaw_base_url: "http://127.0.0.1:18789/v1"
 openclaw_model: "openclaw/default"
 # Token: set OPENCLAW_GATEWAY_TOKEN env, or Glados reads ~/.openclaw/openclaw.json automatically
 # openclaw_api_key: ""
 
-# Optional backend overrides (x-openclaw-model header) — model must be allowed in OpenClaw config
+# Optional OpenClaw backend overrides (x-openclaw-model header)
 # openclaw_vision_backend: "openrouter/google/gemini-2.0-flash-exp:free"
 # openclaw_embedding_backend: ""
 
-# Legacy Ollama URL — only used if llm_provider: ollama and embedding_backend: ollama
-ollama_base_url: "http://127.0.0.1:11434/v1"
+# Local failover when all NVIDIA keys are exhausted (deepseek-moe cluster)
+ollama_fallback_enabled: true
+ollama_fallback_url: "http://192.168.0.102:5000/v1/chat/completions"
+ollama_fallback_model: "deepseek-moe"
 
-# Chat + vision agent targets (openclaw/default = agent primary in OpenClaw)
-model_name: "openclaw/default"
-vision_model: "openclaw/default"
+# Single-brain mode (no multi-agent swarm / per-role cloud models)
+swarm_routing_only: true
 
 # text_only = normal conversation, no auto-running Python (say "run …" / "open …" to act)
 # auto = legacy behavior (runs code whenever the model emits a code block)
 execution_mode: "text_only"
-omni_brain_enabled: false
-omni_brain_confidence_threshold: 72
+# Operator daemon may auto-confirm gated PowerShell (allowlist / blocks still apply)
+oi_auto_confirm: true
 memory_top_k: 2
 # Force llama3.2:1b to use retrieved memory — sandwich [CRITICAL LOCAL MEMORY] into each user message
 memory_force_sandwich: true
@@ -41,7 +66,7 @@ clear_chat_on_startup: true
 
 # Skills — ONE brain file; Glados learns protocols herself (no plugins/skill_*.py)
 skills_brain_path: "data/glados_skills_brain.json"
-skills_self_develop: true
+skills_self_develop: false
 skills_conversational_learn: true
 # Keep trying until it works — no attempt limit (set skills_learn_unlimited_attempts: false to cap)
 skills_learn_until_success: true
@@ -57,49 +82,30 @@ skills_learn_open_browser: false
 skills_learn_reuse_browser: false
 skills_learn_pause_sec: 2.0
 skills_learn_step_pause_sec: 6.0
-# Browser AI off by default — costs time; enable only if you want Gemini/Perplexity tabs
+# Browser AI / multi-advisor learning (off — single local brain only)
 skills_learn_use_browser_ai: false
-skills_learn_skip_search_tabs: true
-skills_learn_browser_sites:
-  - gemini
-  - perplexity
-skills_learn_browser_wait_sec: 180
-skills_learn_browser_poll_sec: 4.0
-skills_learn_browser_load_sec: 14.0
-skills_learn_browser_after_nav_sec: 3.0
-skills_learn_browser_type_delay_sec: 1.5
-skills_learn_browser_after_type_sec: 2.5
-skills_learn_browser_before_submit_sec: 2.0
-skills_learn_browser_cycle_pause_sec: 10.0
-skills_learn_browser_settle_polls: 4
-# Real keyboard/mouse control when CDP cannot type into Gemini/Perplexity
-skills_learn_browser_desktop_admin: true
-skills_learn_browser_desktop_first: true
-skills_learn_skip_browser_for_direct: true
-# API advisors (off by default — use browser instead)
+skills_learn_browser_sites: []
 skills_learn_use_ai_council: false
-gemini_model: "gemini-2.0-flash"
 skills_learn_use_openai_advisor: false
-openai_advisor_model: "gpt-4o-mini"
 skills_auto_learn_on_success: false
 skills_run_direct: true
 
-# --- Browser agent (core cognition — visible Playwright, NOT a skill plugin) ---
-# When a request needs live web data, GLaDOS opens a headed Chromium window and loops:
-# navigate → read page → click/type → read → summarize.
-browser_agent_enabled: true
+# --- Browser agent (off — single local brain; enable for live Playwright web loops) ---
+preferred_browser: chrome
+web_search_engine: google
+browser_agent_channel: chrome
+browser_agent_enabled: false
 browser_agent_headless: false
 browser_agent_max_steps: 20
 browser_agent_slow_mo_ms: 80
 browser_agent_channel: "chrome"
 browser_agent_profile_dir: "data/glados_playwright_profile"
 
-# Piper TTS (paths relative to repo root ok)
+# Piper TTS (local ONNX voice — glados.onnx in repo root)
+tts_engine: "piper"
 piper_model_path: "glados.onnx"
 piper_output_wav: "local_glados_response.wav"
-# Optional: if `piper` is not on PATH, set an explicit executable path.
-# Example: "C:/tools/piper/piper.exe"
-piper_exe_path: ""
+piper_exe_path: "venv/Scripts/piper.exe"
 
 # Wake-word + local STT (Phase 1)
 # - wake_word_engine:
@@ -120,18 +126,25 @@ mic_channels: 1
 pre_roll_ms: 500
 utterance_max_sec: 10
 
-# Memory (static JSON + ChromaDB — embeddings via OpenClaw /v1/embeddings)
-memory_enable_chroma: true
+# Memory — Honcho peer profiles (replaces dumping raw logs into Chroma)
+memory_enable_honcho: true
+honcho_url: "http://127.0.0.1:8000"
+honcho_workspace: "glados"
+honcho_user_peer: "operator"
+honcho_glados_peer: "glados"
+honcho_computer_peer: "computer"
+# Legacy Chroma (off — Honcho is the reasoning memory)
+memory_enable_chroma: false
 chroma_persist_dir: "chroma_db"
 chroma_collection: "glados_memories"
-embedding_backend: "openclaw"
-embedding_model: "openclaw/default"
+embedding_backend: "none"
+embedding_model: "nomic-embed-text"
 # Episodic consolidation — extract facts after each turn (filters out hello/how-are-you noise)
 memory_consolidation_enabled: true
 memory_consolidation_min_fact_len: 10
 
-# Idle epiphany — when quiet, GLaDOS searches the web and stores facts herself
-idle_epiphany_enabled: true
+# Idle epiphany — off in single-brain mode
+idle_epiphany_enabled: false
 idle_epiphany_minutes: 5
 idle_epiphany_poll_sec: 30
 
@@ -145,21 +158,68 @@ plugins_dir: "plugins"
 # - voice: wake word + microphone (default)
 # - text: type into the terminal
 # - hybrid: type, or press Enter to use voice
-input_mode: "hybrid"
+# - daemon: event-driven async watchdog (no blocking text loop)
+input_mode: "daemon"
 
-# Background monitoring (SSH)
+# Background monitoring (SSH + local anomaly watchdog)
 monitoring_enabled: true
 monitoring_interval_sec: 300
-monitoring_devices: ["pihole", "twingate"]
+monitoring_devices: ["proxmox"]
+watchdog_enabled: true
+watchdog_poll_sec: 5
+watchdog_cpu_spike_percent: 92
+watchdog_cpu_spike_sec: 20
+watchdog_network_drop_kbps: 0.5
+watchdog_docker_containers: []
+watchdog_govee_alert_device: "bedroom"
+watchdog_critical_dial: true
+memory_prune_interval_hours: 6
+# Skip chromadb open during prune — current chroma_db can Rust-panic on this chromadb build.
+# Telemetry JSONL still rotates. Set true after resetting/migrating chroma_db.
+memory_prune_chroma: false
+capability_registry_path: "data/capability_registry.json"
+glados_identity_path: "data/glados_identity.txt"
+phone_line_enabled: false
+phone_server_port: 5050
+# Phone alerts: inkbox (Hermes plugin / Voice AI PSTN), ntfy (free push), or twilio.
+phone_alert_provider: "inkbox"
+inkbox_identity: "gladosai"
+inkbox_auto_provision: false
+# Optional public HTTPS origin so Inkbox can reach /api/phone/inkbox on this PC.
+# Example: https://gladosai.inkboxwire.com  or a Cloudflare tunnel URL.
+inkbox_public_url: ""
+# Publish "call me" from the ntfy phone app to NTFY_TOPIC (reliable inbound)
+ntfy_inbox_enabled: true
+ntfy_inbox_poll_sec: 8
+ntfy_server: "https://ntfy.sh"
+ntfy_topic: ""
+ntfy_token: ""
+# Telegram: Voice AI texts GLaDOS here; GLaDOS executes on this PC and replies.
+# Token / allowlist are read from Hermes %LOCALAPPDATA%/hermes/.env (TELEGRAM_BOT_TOKEN).
+telegram_inbox_enabled: true
+inkbox_task_inbox_enabled: true
+call_page_url: ""
+# Emergency outbound — personal cell (Twilio dials this on critical failure / optional "call me")
+# Required in .env for real calls:
+#   TWILIO_ACCOUNT_SID=ACxxxx
+#   TWILIO_AUTH_TOKEN=xxxx
+#   TWILIO_FROM_NUMBER=+1your_twilio_number
+#   TWILIO_TO_NUMBER=+16896102968
+twilio_to_number: "+16896102968"
+twilio_from_number: ""
+twilio_account_sid: ""
+twilio_auth_token: ""
+twilio_voice_url: ""
+twilio_public_ws_url: ""
 
-# --- Speed (Ollama uses GPU on the machine running ollama serve — this config targets localhost)
-llm_max_tokens: 128
-chat_history_max_messages: 6
+# --- Speed (Hermes / Qwen thinking — extra tokens for silent chain-of-thought)
+llm_max_tokens: 2048
+chat_history_max_messages: 8
 ollama_keep_alive: "30m"
 llm_warmup_on_start: true
 conversational_skip_memory: false
 # Computer scan facts go to data/computer_brain_memory.json (memory system). Set false to avoid duplicate prompt block.
-facility_context_in_chat: false
+facility_context_in_chat: true
 tts_async: true
 # Set false to hear Piper voice (slower — waits for audio before next turn if async is false)
 tts_enabled: true
@@ -168,10 +228,10 @@ vision_jpeg_max_edge: 896
 vision_jpeg_quality: 78
 
 # Brain dashboard (FastAPI API + web UI on LAN)
-# Set brain_dashboard_url to your PC LAN IP for phone access, e.g. http://192.168.1.50:8080
+# Set brain_dashboard_url to your PC LAN IP for phone access, e.g. http://192.168.1.50:8888
 # Windows Firewall: allow inbound TCP on brain_dashboard_port (Private network only).
 brain_dashboard_enabled: true
 brain_dashboard_host: "0.0.0.0"
-brain_dashboard_port: 8080
-brain_dashboard_url: "http://localhost:8080"
+brain_dashboard_port: 8888
+brain_dashboard_url: "http://localhost:8888"
 brain_dashboard_token: ""

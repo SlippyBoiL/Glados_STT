@@ -23,12 +23,14 @@ from brain_server.data import (  # noqa: E402
     load_brain_intents,
     load_chroma_memories,
     load_computer_brain_memories,
+    load_honcho_profile,
     load_skills,
     load_static_memories,
     read_telemetry_tail,
     telemetry_path,
 )
 from brain_server.chat_routes import router as chat_router  # noqa: E402
+from brain_server.call_routes import router as call_router  # noqa: E402
 from brain_server.system_metrics import get_system_metrics  # noqa: E402
 from brain_server.telemetry_watcher import TelemetryBroadcaster  # noqa: E402
 
@@ -86,8 +88,23 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(3.0)
 
     metrics_task = asyncio.create_task(_metrics_loop())
+    try:
+        from glados_phone.inkbox_media import start_inkbox_tunnel, stop_inkbox_tunnel
+
+        def _boot_call_bridge() -> None:
+            start_inkbox_tunnel(cfg, allow_connect=True)
+
+        await asyncio.to_thread(_boot_call_bridge)
+    except Exception as exc:
+        print(f"[Inkbox] media tunnel not started: {exc}")
+        stop_inkbox_tunnel = None  # type: ignore
     yield
     metrics_task.cancel()
+    try:
+        if stop_inkbox_tunnel:
+            stop_inkbox_tunnel()
+    except Exception:
+        pass
 
 
 app = FastAPI(title="Glados Brain Dashboard API", lifespan=lifespan)
@@ -101,6 +118,8 @@ app.add_middleware(
 )
 
 app.include_router(chat_router, dependencies=[Depends(_verify_token)])
+# Live call line (free softphone) — register before StaticFiles catch-all
+app.include_router(call_router)
 
 
 @app.get("/api/health")
@@ -136,10 +155,13 @@ def brain_memories(
     static = load_static_memories()
     chroma = load_chroma_memories(cfg)
     computer = load_computer_brain_memories()
+    honcho = load_honcho_profile(cfg)
     return {
         "static": static,
         "chroma": chroma,
         "chroma_enabled": bool(cfg.get("memory_enable_chroma")),
+        "honcho": honcho,
+        "honcho_enabled": bool(cfg.get("memory_enable_honcho", True)),
         "computer": computer.get("facts") or [],
         "computer_meta": {
             "fact_count": computer.get("fact_count", 0),
@@ -240,8 +262,16 @@ def run_server() -> None:
 
     cfg = load_config()
     host = str(cfg.get("brain_dashboard_host") or "0.0.0.0")
-    port = int(cfg.get("brain_dashboard_port") or 8080)
-    uvicorn.run("brain_server.main:app", host=host, port=port, reload=False)
+    port = int(cfg.get("brain_dashboard_port") or 8888)
+    # Inkbox's tunnel rejects permessage-deflate on the URL-forward hop.
+    # If uvicorn negotiates it, the call rings but media never starts.
+    uvicorn.run(
+        "brain_server.main:app",
+        host=host,
+        port=port,
+        reload=False,
+        ws_per_message_deflate=False,
+    )
 
 
 if __name__ == "__main__":

@@ -41,7 +41,24 @@ def decide(user_input: str, state: Dict[str, Any], cfg: Dict[str, Any]) -> Optio
         return _make_decision(override, text, state, cfg, confidence=0.95)
 
     # Status / report
-    if _match_keywords(text, ["status", "system report", "brain report", "how is the computer", "full scan report"]):
+    if _match_keywords(
+        text,
+        [
+            "status",
+            "system report",
+            "brain report",
+            "how is the computer",
+            "full scan report",
+            "check up on my computer",
+            "check on my computer",
+            "check my computer",
+            "check up on my computers",
+            "check on my computers",
+            "check my computers",
+            "how are my computers",
+            "facility status",
+        ],
+    ):
         return _make_decision("report_status", text, state, cfg, confidence=0.9)
 
     if _match_keywords(text, ["rescan", "scan computer", "update brain", "refresh brain", "rescan computer"]):
@@ -51,11 +68,21 @@ def decide(user_input: str, state: Dict[str, Any], cfg: Dict[str, Any]) -> Optio
     if _match_keywords(text, ["flush dns", "fix dns", "fix internet", "fix wifi", "repair network", "network fix"]):
         return _make_decision("network_repair", text, state, cfg, confidence=0.88)
 
-    # Open app
-    m = re.search(r"\b(open|launch|start|run|boot)\s+(?:up\s+)?(?:the\s+)?([a-z0-9 ._-]+)", text)
+    # Open app — stop at polite trailing words so "open steam for me" → steam
+    m = re.search(
+        r"\b(open|launch|start|run|boot)\s+(?:up\s+)?(?:the\s+)?([a-z0-9][a-z0-9 ._-]*?)"
+        r"(?=\s+(?:for me|for us|please|thanks|thank you|so |because |and then)|\?|\.|$)",
+        text,
+    )
     if m:
         app = m.group(2).strip().rstrip(".")
+        app = re.sub(r"\s+(for me|for us|please)$", "", app).strip()
         app = aliases.get(app, app)
+        # Collapse multi-word to known alias when possible
+        for alias, canon in aliases.items():
+            if alias in app or app == canon:
+                app = canon
+                break
         return _make_decision("open_app", text, state, cfg, confidence=0.85, params={"app": app})
 
     # Close app

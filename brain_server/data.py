@@ -93,6 +93,17 @@ def load_static_memories() -> List[Dict[str, Any]]:
         return []
 
 
+def load_honcho_profile(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    if not cfg.get("memory_enable_honcho", True):
+        return {"enabled": False, "ready": False, "error": "disabled"}
+    try:
+        from memory.honcho_store import get_honcho_store
+
+        return get_honcho_store(cfg).profile_snapshot()
+    except Exception as exc:
+        return {"enabled": True, "ready": False, "error": str(exc)}
+
+
 def load_chroma_memories(cfg: Dict[str, Any], limit: int = 100) -> List[Dict[str, Any]]:
     if not cfg.get("memory_enable_chroma"):
         return []
@@ -300,8 +311,13 @@ def build_state(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "last_monitor_alert": monitor.get("payload") if monitor else None,
         "last_thinking": last_thinking.get("payload") if last_thinking else None,
         "llm_config": {
-            "provider": str(cfg.get("llm_provider") or "openclaw"),
-            "model": str(cfg.get("openclaw_model") or cfg.get("model_name") or ""),
+            "provider": str(cfg.get("llm_provider") or "openrouter"),
+            "model": str(
+                cfg.get("model_name")
+                or cfg.get("openrouter_model")
+                or cfg.get("openclaw_model")
+                or ""
+            ),
             "vision_model": str(cfg.get("vision_model") or ""),
             "embedding_backend": str(cfg.get("embedding_backend") or ""),
         },

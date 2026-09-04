@@ -66,9 +66,9 @@ DEFAULT_AGENTS: Dict[str, Dict[str, str]] = {
 DEFAULT_PHASE_ROUTING: Dict[str, str] = {
     "facility": "FACILITY_MANAGER",
     "browser": "WEB_RESEARCHER",
-    "learn": "WEB_RESEARCHER",
-    "task": "CORE_CODER",
-    "skills": "CORE_CODER",
+    "learn": "MANAGER",
+    "task": "MANAGER",
+    "skills": "MANAGER",
     "execute": "CORE_CODER",
     "llm": "MANAGER",
     "memory": "MANAGER",
@@ -445,6 +445,20 @@ class MaintenanceAgent:
                     {"role": "user", "content": prompt},
                 ],
                 max_tokens=256,
+                on_rate_limit_retry=lambda sleep_time: swarm_telemetry(
+                    self._telemetry_log,
+                    self._telemetry_path,
+                    "MAINTENANCE_AGENT",
+                    THINKING_STATUS,
+                    f"Server congested. Retrying request in {sleep_time} seconds...",
+                ),
+                on_local_fallback=lambda: swarm_telemetry(
+                    self._telemetry_log,
+                    self._telemetry_path,
+                    "MAINTENANCE_AGENT",
+                    THINKING_STATUS,
+                    "Cloud API locked. Rerouting neural pathways to local hardware.",
+                ),
             )
             return (res.choices[0].message.content or "").strip()
         except Exception:
